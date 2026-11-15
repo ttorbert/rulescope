@@ -2,7 +2,8 @@
   "_lagprof_notes": [
     "The lookup index has its own small mapping, not lagprof-common. LOOKUP JOIN adds every field the lookup index maps, and a lookup field replaces any query column of the same name.",
     "So map only what pair documents contain. `lagprof.py lint` fails if this mapping shares a name with a column the miss-rate query creates before its join.",
-    "The index is rebuilt by every workflow run, so the installer recreates it when its mapping is out of date."
+    "The index is rebuilt by every workflow run, so the installer recreates it when its mapping is out of date.",
+    "@timestamp is when a run wrote the pair. Stale cleanup uses it: see delete_stale in the workflows."
   ],
   "index_patterns": ["lagprof-rule-streams"],
   "priority": 500,
@@ -11,6 +12,7 @@
     "mappings": {
       "dynamic": false,
       "properties": {
+        "@timestamp": { "type": "date" },
         "data_stream": {
           "properties": {
             "name": { "type": "keyword" },

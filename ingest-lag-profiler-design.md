@@ -118,7 +118,7 @@ Two safeguards follow from this:
 
 **`lagprof-rule-streams`**:
 - The join keys: `data_stream.dataset` and `data_stream.namespace`
-- `data_stream.name`, `data_stream.type`, `lagprof.run.id`, `lagprof.space.id`, `lagprof.parse_error`
+- `@timestamp` (when a run wrote the pair, set by `lagprof-streams-parse`), `data_stream.name`, `data_stream.type`, `lagprof.run.id`, `lagprof.space.id`, `lagprof.parse_error`
 - `lagprof.rule.`: `id`, `name`, `interval_s`, `lookback_s`, `timestamp_field`
 
 The document ID is the rule ID plus the data stream name, so a rerun overwrites rather than duplicates.
@@ -191,13 +191,13 @@ Raw logs aren't divided by space, so stream stats and host lag are the same for 
 
 ### Stages
 
-Both versions run the same stages:
+Both versions run the same stages. First, a `run_start` step asks Elasticsearch for the time (`ROW started = NOW()`), so the run start comes from the same clock that stamps rule and pair documents at ingest.
 
 1. **Collect rules.** `kibana.request` calls the rules find API for enabled rules, with `per_page=10000` and one page only. That step sets `max-step-size: 64mb`, because the default 10 MB output limit fails at about 2,300 rules. The all-spaces version first lists the spaces and repeats this for each one, using `/s/<space>/` paths. A space with more than 10,000 enabled rules is cut off at 10,000. When the find response's `total` is over 10,000, the run writes a notice document to `lagprof-rules` (`lagprof.rule.type: lagprof_notice`, unsupported, with the count in its name), which shows in the *Unsupported rules* panel. It carries the run ID, so stale cleanup removes it once the space is back under the cap. Run counts and *Rule coverage* leave it out.
-2. **Save rule settings.** One bulk request per space writes the rules to `lagprof-rules` through `lagprof-rules-parse`, with `refresh=wait_for`. An `if` step then checks the bulk response's `errors` flag and, if it's set, calls a path that doesn't exist on purpose, so the run fails and the fallback records why. Only the rules the pipeline marked supported are read back.
+2. **Save rule settings.** One bulk request per space writes the rules to `lagprof-rules` through `lagprof-rules-parse`, with `refresh=wait_for`. An `if` step then checks the bulk response's `errors` flag and, if it's set, calls a path that doesn't exist on purpose, so the run fails and the fallback records why. The supported rules written since the run started are read back: this run's, plus any an overlapping run rewrote.
 3. **Expand index patterns.** For each supported rule, one `_resolve/index` call covers all its local patterns. Only the `data_streams` part of the response is used, so backing `.ds-` indices, aliases and plain indices are ignored. One bulk request per rule writes a pair for each data stream to `lagprof-rule-streams`, with the same error check as stage 2. The index is then refreshed so the query can see the new pairs. Missing indices in a rule's patterns are ignored.
-4. **Remove stale documents.** A delete-by-query removes documents from earlier runs from both rule indices, which drops disabled and deleted rules. In per-space mode, it only touches its own space. This stage only runs if stages 1 to 3 succeeded. A partial run never deletes good pairs.
-5. **Count and check for data.** Two searches count this run's rules and pairs for the run summary. Two more searches with `terminate_after: 1` check that `logs-*` has any documents, and any with `event.ingested`. ES|QL rejects a query that names a column no index maps, so on a new cluster the queries would fail every run. If nothing is measurable, the run writes a `no_data` summary with a plain-words `reason` and stops.
+4. **Remove stale documents.** A delete-by-query removes documents from both rule indices that are from another run **and** were stamped before this run started (or have no `@timestamp`). That drops disabled and deleted rules. Every current rule and pair is rewritten by this run, so anything older that it didn't rewrite is stale. Bounding the delete by the run start means two overlapping runs, such as a manual run during a scheduled one, can't delete each other's documents; document IDs are deterministic, so their writes overwrite rather than duplicate. In per-space mode, it only touches its own space. This stage only runs if stages 1 to 3 succeeded. A partial run never deletes good pairs.
+5. **Count and check for data.** Two searches count the rules and pairs written since the run started, for the run summary. Two more searches with `terminate_after: 1` check that `logs-*` has any documents, and any with `event.ingested`. ES|QL rejects a query that names a column no index maps, so on a new cluster the queries would fail every run. If nothing is measurable, the run writes a `no_data` summary with a plain-words `reason` and stops.
 6. **Run the queries.** The workflow posts the miss-rate, stream-stats and host-lag queries to the ES|QL API. In per-space mode, only the copy with `write_shared_stats: true` runs the last two.
 7. **Save results.** One bulk request per query writes the rows as create operations, and a final step writes the `success` run summary. If any step fails, a workflow-level fallback writes a `failed` run summary with `error.message` instead.
 
@@ -617,9 +617,9 @@ Found in the Nov 14, 2026 code review.
 - **Fixed Nov 14, 2026: the per-space dashboard wasn't filtered to its space.** Now its panels on results, rules and runs are.
 - **Fixed Nov 14, 2026: the dashboard note didn't mention 1-minute rules.** It now says their estimate can be a few points low.
 
-Not fixed yet:
+- **Fixed Nov 15, 2026: overlapping runs emptied the rule inventory.** Stale cleanup deleted every rule and pair document from other runs, so two overlapping runs (a manual run during a scheduled one) deleted each other's documents and recorded `success` with few or no rules. Now stale cleanup only deletes documents stamped before the run started, and pairs carry `@timestamp`. Tested in the lab: three pairs of simultaneous runs kept all 9 rules and 16 pairs.
 
-- **Overlapping runs empty the rule inventory.** Each run's stale cleanup deletes rule and pair documents from every other run. If two runs of the same workflow overlap, for example a manual run started during a scheduled one, each deletes the other's documents, and both record `success` with few or no rules and no results. Found in the lab on Nov 14, 2026. The next normal run recovers. A fix would be to delete only documents older than this run's start, or to skip a run while another is in progress.
+None are open.
 
 ## Notes for reviewers
 
@@ -643,6 +643,7 @@ Not fixed yet:
 
 - **Query copies must match.** The queries in `esql/` are pasted into both workflows. `lagprof.py lint` compares them with whitespace normalized; the per-space miss-rate query differs only by its `?space_id` filter.
 - **Row positions follow `KEEP`.** The workflows' bulk bodies read result rows by position (`row[0]` … `row[16]`). Changing a query's `KEEP` order or columns means changing the matching `save_*` step in both workflows. Lint doesn't check this.
+- **Stale cleanup trusts `@timestamp`.** It deletes rule and pair documents stamped before the run started. Anything written to `lagprof-rules` or `lagprof-rule-streams` must be stamped at ingest (`lagprof-rules-parse`, `lagprof-streams-parse` or `lagprof-stamp`), or the next run deletes it. Reads and counts in a run select by `@timestamp >= run start`, not by run ID.
 - **Document IDs make reruns safe.** Result IDs are built from the window start, rule ID and stream (or stream and host). Changing them would let a rerun duplicate an hour.
 - **Lookup fields replace query columns.** No field mapped in `lagprof-rule-streams` may share a name with a column the miss-rate query creates before its join. Lint checks this.
 - **Templates must work on Serverless.** No shard, replica or ILM settings; every data stream has `data_retention`. Lint checks this.
@@ -653,7 +654,7 @@ Not fixed yet:
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `make test` | `lint`, 51 installer unit tests against a fake cluster, a 20,000-trial formula simulation | Nothing |
+| `make test` | `lint`, 52 installer unit tests against a fake cluster, a 20,000-trial formula simulation | Nothing |
 | `make simulate` | The full 100,000-trial simulation, as Markdown | Nothing |
 | `make test-pipelines` | 19 `_simulate` fixture cases for the three pipelines | The lab |
 | `make dashboard` | Every dashboard query, then rebuilds the JSON | The lab |

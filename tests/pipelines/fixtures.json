@@ -70,17 +70,17 @@
     {
       "name": "system security",
       "input": {"data_stream": {"name": "logs-system.security-default"}},
-      "expect": {"data_stream.type": "logs", "data_stream.dataset": "system.security", "data_stream.namespace": "default"}
+      "expect": {"data_stream.type": "logs", "data_stream.dataset": "system.security", "data_stream.namespace": "default", "@timestamp": "*"}
     },
     {
       "name": "endpoint process, custom namespace",
       "input": {"data_stream": {"name": "logs-endpoint.events.process-prod"}},
-      "expect": {"data_stream.dataset": "endpoint.events.process", "data_stream.namespace": "prod"}
+      "expect": {"data_stream.dataset": "endpoint.events.process", "data_stream.namespace": "prod", "@timestamp": "*"}
     },
     {
       "name": "too many hyphens is kept but never joins",
       "input": {"data_stream": {"name": "logs-foo-bar-baz"}},
-      "expect": {"data_stream.dataset": null, "data_stream.namespace": null, "lagprof.parse_error": "*"}
+      "expect": {"data_stream.dataset": null, "data_stream.namespace": null, "lagprof.parse_error": "*", "@timestamp": "*"}
     },
     {
       "name": "no hyphens",

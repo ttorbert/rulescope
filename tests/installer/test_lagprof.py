@@ -126,7 +126,9 @@ def make_handler(fake: FakeCluster):
                 return self._send(200, {idx.lstrip("/"): {"mappings": fake.store[idx]}})
             if path in ("/lagprof-rules", "/lagprof-rule-streams"):
                 if method == "PUT":
-                    fake.store[path] = {}
+                    # Like Elasticsearch, a new index takes its mapping from the index template.
+                    fake.store[path] = (lagprof.load_json(lagprof.LOOKUP_TEMPLATE)["template"]["mappings"]
+                                        if path == "/lagprof-rule-streams" else {})
                     fake.index_creates = getattr(fake, "index_creates", 0) + 1
                     return self._send(200, {"acknowledged": True})
                 if method == "DELETE":
@@ -624,6 +626,18 @@ class InstallTests(FakeServerCase):
         self.rep.lines.clear()
         lagprof.install(self.client, self.rep, lagprof.InstallOptions())
         self.assertIn(("unchanged", "index", "lagprof-rule-streams"), self.statuses())
+
+    def test_lookup_index_missing_a_field_is_recreated(self):
+        lagprof.install(self.client, self.rep, lagprof.InstallOptions())
+        # An index from before pairs were stamped: no @timestamp, which stale cleanup needs.
+        mapping = json.loads(json.dumps(self.fake.store["/lagprof-rule-streams"]))
+        del mapping["properties"]["@timestamp"]
+        self.fake.store["/lagprof-rule-streams"] = mapping
+        self.rep.lines.clear()
+        lagprof.install(self.client, self.rep, lagprof.InstallOptions())
+        self.assertIn(("recreated", "index", "lagprof-rule-streams"), self.statuses())
+        self.assertIn("1 missing", self.out.getvalue())
+        self.assertIn("@timestamp", self.fake.store["/lagprof-rule-streams"]["properties"])
 
     def test_uninstall_keeps_templates_in_use(self):
         lagprof.install(self.client, self.rep, lagprof.InstallOptions())

@@ -43,6 +43,21 @@ settings:
 
 steps:
   # ---------------------------------------------------------------------------
+  # Run start, from Elasticsearch's clock (the same clock that stamps rule and
+  # pair documents at ingest). Every document this run writes is stamped at or
+  # after it. Stale cleanup deletes only documents stamped before it, so a run
+  # that overlaps this one (a manual run during a scheduled one) can't delete
+  # the documents this run writes, or the other way round.
+  # ---------------------------------------------------------------------------
+  - name: run_start
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /_query
+      body:
+        query: ROW started = NOW()
+
+  # ---------------------------------------------------------------------------
   # Stage 1 and 2: collect this space's enabled rules and save them.
   # ---------------------------------------------------------------------------
   - name: get_rules
@@ -118,7 +133,9 @@ steps:
         query:
           bool:
             filter:
-              - term: { lagprof.run.id: "{{ execution.id }}" }
+              # Written since this run started: by this run, or by an overlapping one.
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+              - term: { lagprof.space.id: "{{ consts.space_id }}" }
               - term: { lagprof.rule.supported: true }
 
   - name: for_each_rule
@@ -174,14 +191,22 @@ steps:
       body:
         query:
           bool:
-            # Without the space filter, each copy would delete every other space's pairs.
             filter:
+              # Without the space filter, each copy would delete every other space's pairs.
               - term: { lagprof.space.id: "{{ consts.space_id }}" }
+              # Stamped before this run started, so no current run rewrote them. Pairs
+              # written by older pack versions have no @timestamp; they count as stale.
+              - bool:
+                  should:
+                    - range: { "@timestamp": { lt: "{{ steps.run_start.output.values[0][0] }}" } }
+                    - bool: { must_not: [ { exists: { field: "@timestamp" } } ] }
+                  minimum_should_match: 1
             must_not:
               - term: { lagprof.run.id: "{{ execution.id }}" }
 
   # ---------------------------------------------------------------------------
-  # Run summary counts, recorded by both outcomes below
+  # Run summary counts, recorded by both outcomes below: the current inventory,
+  # written since this run started.
   # ---------------------------------------------------------------------------
   - name: count_rules
     type: elasticsearch.request
@@ -194,7 +219,8 @@ steps:
         query:
           bool:
             filter:
-              - term: { lagprof.run.id: "{{ execution.id }}" }
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+              - term: { lagprof.space.id: "{{ consts.space_id }}" }
             # The rule cap notice isn't a rule.
             must_not:
               - term: { lagprof.rule.type: lagprof_notice }
@@ -207,7 +233,11 @@ steps:
       method: POST
       path: /lagprof-rule-streams/_count
       body:
-        query: { term: { lagprof.run.id: "{{ execution.id }}" } }
+        query:
+          bool:
+            filter:
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+              - term: { lagprof.space.id: "{{ consts.space_id }}" }
 
   # ---------------------------------------------------------------------------
   # Data check. ES|QL rejects a query that names a column no logs-* index maps,

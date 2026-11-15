@@ -24,7 +24,7 @@ Every `lagprof-*` index except the lookup index shares one component template, [
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `@timestamp` | date | Results: start of the hour measured. Rules: when the run saw the rule. Runs: when the run finished. |
+| `@timestamp` | date | Results: start of the hour measured. Rules and pairs: when a run wrote them (stale cleanup uses this). Runs: when the run finished. |
 | `lagprof.run.id` | keyword | Workflow execution ID |
 | `lagprof.window.start` | date | Start of the clock hour measured (results, stream stats, host lag) |
 | `lagprof.space.id` | keyword | Kibana space of the rule (rules, pairs, results) or of the per-space copy (runs) |
@@ -55,7 +55,7 @@ Every `lagprof-*` index except the lookup index shares one component template, [
 The mapping contains only these fields:
 - `data_stream.name`, `data_stream.type`, `data_stream.dataset`, `data_stream.namespace`
 - `lagprof.rule.id`, `name`, `interval_s`, `lookback_s` and `timestamp_field`
-- `lagprof.space.id`, `lagprof.run.id` and `lagprof.parse_error`
+- `@timestamp`, `lagprof.space.id`, `lagprof.run.id` and `lagprof.parse_error`
 
 The installer recreates the index when its mapping has fields this template doesn't. Every workflow run rebuilds the index, so nothing lasting is lost.
 

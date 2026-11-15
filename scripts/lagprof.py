@@ -714,13 +714,18 @@ def install_one(client: Client, rep: Reporter, r: Resource, opts: InstallOptions
         if r.name == LOOKUP_INDEX:
             _, m = client.es("GET", f"/{r.name}/_mapping")
             installed = mapped_fields(next(iter(m.values()))["mappings"])
-            extra = installed - lookup_template_fields()
-            if extra:
+            wanted = lookup_template_fields()
+            extra, missing = installed - wanted, wanted - installed
+            if extra or missing:
+                # Extra fields would enter the join. Missing ones (such as @timestamp, which
+                # stale cleanup needs) would be unsearchable on existing documents.
                 # Rebuilt by every workflow run, so recreating it loses nothing lasting.
                 client.es("DELETE", f"/{r.name}")
                 client.es("PUT", f"/{r.name}")
+                why = ", ".join(p for p in (f"{len(extra)} extra" if extra else "",
+                                            f"{len(missing)} missing" if missing else "") if p)
                 rep.line("recreated", r.kind, r.name,
-                         f"mapping was out of date ({len(extra)} extra fields); the next workflow run refills it")
+                         f"mapping was out of date ({why} fields); the next workflow run refills it")
                 return 0
         rep.line("unchanged", r.kind, r.name, "exists")
         return 0

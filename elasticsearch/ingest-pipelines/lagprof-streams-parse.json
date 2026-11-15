@@ -2,6 +2,14 @@
   "description": "Ingest Lag Profiler: split a data stream name (type-dataset-namespace) into the fields the miss-rate query joins on. A name that doesn't fit is kept with lagprof.parse_error and never joins, so one odd name can't fail a whole workflow run.",
   "processors": [
     {
+      "set": {
+        "tag": "lagprof-pair-seen-at",
+        "field": "@timestamp",
+        "value": "{{{_ingest.timestamp}}}",
+        "description": "When this run wrote the pair. Stale cleanup keeps pairs written since a run started, so overlapping runs can't delete each other's pairs."
+      }
+    },
+    {
       "dissect": {
         "tag": "lagprof-split-stream-name",
         "field": "data_stream.name",
