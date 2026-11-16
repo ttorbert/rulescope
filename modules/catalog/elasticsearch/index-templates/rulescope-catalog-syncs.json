@@ -1,0 +1,59 @@
+{
+  "_rulescope_notes": [
+    "Sync and snapshot run records (kind: sync, snapshot), and rule cap notices (kind: rule_cap)."
+  ],
+  "index_patterns": [
+    "rulescope-catalog-syncs"
+  ],
+  "data_stream": {},
+  "composed_of": [
+    "rulescope-common"
+  ],
+  "priority": 500,
+  "template": {
+    "lifecycle": {
+      "data_retention": "90d"
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "kind": {
+          "type": "keyword"
+        },
+        "status": {
+          "type": "keyword"
+        },
+        "started": {
+          "type": "date"
+        },
+        "error": {
+          "type": "match_only_text"
+        },
+        "rules_seen": {
+          "type": "long"
+        },
+        "rules_enabled": {
+          "type": "long"
+        },
+        "spaces": {
+          "type": "long"
+        },
+        "pairs_written": {
+          "type": "long"
+        },
+        "rule_cap_spaces": {
+          "type": "long"
+        },
+        "rules_copied": {
+          "type": "long"
+        },
+        "day": {
+          "type": "keyword"
+        },
+        "total": {
+          "type": "long"
+        }
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 Estimates how many events each Elastic Security detection rule misses because logs arrive late. It runs entirely inside Elastic: an hourly workflow measures the lag between when events happened (`@timestamp`) and when they arrived (`event.ingested`). It then estimates each rule's miss rate from its schedule and look-back, and keeps the history in ordinary indices with a dashboard and alerts.
 
-> **Becoming rulescope.** This project is being restructured into **rulescope**: a shared rule catalog plus separate report modules, with the Ingest Lag Profiler as the first module. See [rulescope-design.md](rulescope-design.md). Until the restructure lands, everything below describes the lag-only pack as it is today.
+> **Becoming rulescope.** This project is being restructured into **rulescope**: a shared rule catalog plus separate report modules, with the Ingest Lag Profiler as the first module. See [rulescope-design.md](rulescope-design.md). The [Rule Catalog](modules/catalog/README.md) module is built and installs on its own with `--modules catalog`; the lag module doesn't use it yet. Everything below describes the lag module as it is today.
 
 > **Status: in development (v0.1.0-dev).** Everything runs end to end on 9.5.6 in the lab: workflows, queries, pipelines, installer, dashboard and alerts. **The lab validation against real rule alerts passed:** the profiler estimated 55.8% against an observed 55.6% ([results](docs/validation-results.md)). Installer tests on Elastic Cloud and Serverless are still to do. See [build-plan.md](build-plan.md).
 
@@ -33,6 +33,7 @@ The dashboard's *Rule coverage* panel shows which group each rule is in.
 | [Miss model](docs/miss-model.md) | The formula, its simulation check, and what it leaves out |
 | [Field reference](docs/fields.md) | Every field in the `lagprof-*` indices |
 | [rulescope design](rulescope-design.md) | The planned restructure: rule catalog, modules, space scopes, cross-cluster planning |
+| [Rule Catalog](modules/catalog/README.md) | The catalog module: install, workflows, indices, dashboard, limits |
 | [Design](ingest-lag-profiler-design.md) | How it works, as built, with [notes for reviewers](ingest-lag-profiler-design.md#notes-for-reviewers) and [known issues](ingest-lag-profiler-design.md#known-issues) |
 | [Build plan](build-plan.md) | Milestones, what's done, and what's next |
 
@@ -100,7 +101,7 @@ make lab-down      # stop (keeps data); make lab-reset deletes everything
 ## Development
 
 ```bash
-make test             # lint, 72 unit tests, quick formula simulation (no cluster needed)
+make test             # lint, 86 unit tests, quick formula simulation (no cluster needed)
 make simulate         # full formula simulation
 make render           # regenerate the workflow YAML from its template
 make test-pipelines   # ingest pipeline fixtures against the lab
@@ -114,6 +115,7 @@ make package          # zip the pack into dist/
 | [esql/](esql/) | The three hourly queries; `lint` checks they match the workflows |
 | [kibana/workflows/](kibana/workflows/) | The workflow template, and the all-spaces and per-space workflows rendered from it |
 | [kibana/alerting/](kibana/alerting/) | Miss-rate and stale-profiler alert rules |
+| [modules/catalog/](modules/catalog/) | Rule Catalog module: templates, pipelines, role, workflow templates, dashboard, alert |
 | [rulescope/](rulescope/) | Installer package for Docker, self-managed, Cloud and Serverless (`python3 -m rulescope`). [scripts/lagprof.py](scripts/lagprof.py) is a wrapper kept for the lab scripts. |
 | [scripts/lab/](scripts/lab/) | Rancher Desktop lab, traffic generator, validation |
 | [kibana/dashboards/](kibana/dashboards/) | Dashboard; `build.py` writes the JSON from readable ES\|QL queries |

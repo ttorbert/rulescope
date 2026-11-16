@@ -14,7 +14,7 @@ from .lint import lint
 from .modules import DEFAULT_MODULES, MODULES, parse_modules, resolve
 from .report import Reporter
 from . import render
-from .resources import render_workflow
+from .resources import pack_resources, render_module_workflow, render_workflow
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     conn(p)
     mods(p)
     p.add_argument("--space")
-    p.add_argument("--delete-data", action="store_true", help="also delete all lagprof-* data")
+    p.add_argument("--delete-data", action="store_true", help="also delete the modules' data (lagprof-*, rulescope-catalog-*)")
     p.add_argument("--yes", action="store_true", help="don't ask before deleting data")
 
     sub.add_parser("lint", help="offline checks of the pack files")
@@ -65,7 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("render", help="regenerate kibana/workflows/*.yaml from the workflow template")
     p.add_argument("--check", action="store_true", help="only report files that are out of date")
 
-    p = sub.add_parser("render-workflow", help="write a ready-to-import workflow YAML to build/")
+    p = sub.add_parser("render-workflow", help="write ready-to-import workflow YAML to build/")
+    mods(p)
     wf(p)
     return ap
 
@@ -84,11 +85,19 @@ def main(argv: list[str] | None = None) -> int:
                 rep.line("ok", "render", "workflows", "match the template")
             return 1 if (args.check and stale) else 0
         if args.cmd == "render-workflow":
-            fname, text = render_workflow(args.workflow, args.space, args.shared_stats)
-            out = PACK_ROOT / "build" / fname
-            out.parent.mkdir(exist_ok=True)
-            out.write_text(text)
-            rep.line("written", "workflow", f"build/{fname}")
+            space = args.space if args.workflow == "per-space" else None
+            if args.workflow == "per-space" and not space:
+                raise ConfigError("per-space mode needs --space")
+            outputs = []
+            for r in pack_resources(space, parse_modules(args.modules)):
+                if r.kind == "workflow":
+                    outputs.append(render_workflow(args.workflow, args.space, args.shared_stats) if r.module == "lag"
+                                   else render_module_workflow(r, space))
+            for fname, text in outputs:
+                out = PACK_ROOT / "build" / fname
+                out.parent.mkdir(exist_ok=True)
+                out.write_text(text)
+                rep.line("written", "workflow", f"build/{fname}")
             return 0
 
         # Checked before connecting, so a typo fails fast.

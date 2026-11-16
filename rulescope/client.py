@@ -55,13 +55,14 @@ class Client:
             raise HttpError(status, method, url, parsed)
         return status, parsed
 
-    def as_workflow_owner(self) -> "Client":
-        """A client that authenticates with the workflow owner's API key, if one is set."""
-        if not self.cfg.workflow_api_key:
+    def as_workflow_owner(self, module: str = "lag") -> "Client":
+        """A client that authenticates with the module's workflow owner API key, if one is set."""
+        key = self.cfg.owner_key(module) if hasattr(self.cfg, "owner_key") else self.cfg.workflow_api_key
+        if not key:
             return self
         import copy
         cfg = copy.copy(self.cfg)
-        cfg.api_key, cfg.username, cfg.password = self.cfg.workflow_api_key, "", ""
+        cfg.api_key, cfg.username, cfg.password = key, "", ""
         return Client(cfg, serverless=self.serverless)
 
     def es(self, method: str, path: str, body=None, allow: tuple[int, ...] = ()):

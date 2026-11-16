@@ -1,0 +1,13 @@
+{
+  "description": "rulescope: default pipeline for every rulescope index. Sets @timestamp to the arrival time when a document has none. Cluster and tenant fields are added here in a later step.",
+  "processors": [
+    {
+      "set": {
+        "tag": "rulescope-stamp-time",
+        "field": "@timestamp",
+        "value": "{{{_ingest.timestamp}}}",
+        "override": false
+      }
+    }
+  ]
+}

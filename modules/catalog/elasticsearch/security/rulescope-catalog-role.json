@@ -1,0 +1,56 @@
+{
+  "_rulescope_notes": [
+    "Role for the catalog workflows (PUT /api/security/role/rulescope-catalog, or rulescope-catalog-<space> per space). Keys starting with _rulescope are removed before sending.",
+    "The installer replaces __SPACES__ with [\"*\"] for the global scope, or [\"<space id>\"] for a per-space copy.",
+    "view_index_metadata on logs-* lets _resolve/index list the data streams a rule's patterns match. The catalog never reads events, so it has no read on logs-*.",
+    "Scheduled runs use the identity of the account that last saved the workflow, so give this role to a dedicated user and set RULESCOPE_CATALOG_WORKFLOW_API_KEY."
+  ],
+  "elasticsearch": {
+    "cluster": [
+      "manage_own_api_key"
+    ],
+    "indices": [
+      {
+        "names": [
+          "logs-*"
+        ],
+        "privileges": [
+          "view_index_metadata"
+        ]
+      },
+      {
+        "names": [
+          "rulescope-catalog-*"
+        ],
+        "privileges": [
+          "read",
+          "write",
+          "delete",
+          "create_index",
+          "auto_configure",
+          "maintenance",
+          "view_index_metadata"
+        ]
+      }
+    ]
+  },
+  "kibana": [
+    {
+      "base": [],
+      "feature": {
+        "securitySolutionRulesV4": [
+          "read"
+        ],
+        "workflowsManagement": [
+          "minimal_read",
+          "workflow_read",
+          "workflow_create",
+          "workflow_update",
+          "workflow_execute",
+          "workflow_execution_read"
+        ]
+      },
+      "spaces": "__SPACES__"
+    }
+  ]
+}

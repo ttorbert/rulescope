@@ -1,0 +1,110 @@
+{
+  "_rulescope_notes": [
+    "Lookup index: one document per enabled rule and data stream it searches. Own small mapping, not the component templates: LOOKUP JOIN adds every mapped field, and a lookup field replaces a query column of the same name.",
+    "Rebuilt by every sync, so the installer recreates it when its mapping is out of date."
+  ],
+  "index_patterns": [
+    "rulescope-catalog-rule-streams"
+  ],
+  "priority": 500,
+  "template": {
+    "settings": {
+      "index": {
+        "mode": "lookup",
+        "default_pipeline": "rulescope-stamp"
+      }
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "data_stream": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            },
+            "namespace": {
+              "type": "keyword"
+            }
+          }
+        },
+        "rulescope": {
+          "properties": {
+            "sync": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "scope": {
+              "type": "keyword"
+            },
+            "space": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "cluster": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "tenant": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "parse_error": {
+              "type": "keyword",
+              "ignore_above": 1024
+            },
+            "rule": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "rule_id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "type": {
+                  "type": "keyword"
+                },
+                "interval_s": {
+                  "type": "long"
+                },
+                "lookback_s": {
+                  "type": "long"
+                },
+                "schedule_parsed": {
+                  "type": "boolean"
+                },
+                "timestamp_field": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

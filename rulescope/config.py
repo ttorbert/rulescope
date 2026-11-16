@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .core import PACK_ROOT, TARGETS, ConfigError
@@ -69,6 +69,17 @@ class Config:
     ca_cert: str = ""
     verify_tls: bool = True
     workflow_api_key: str = ""
+    # Per-module workflow owner keys: {"catalog": key}. See owner_key().
+    module_api_keys: dict = field(default_factory=dict)
+
+    def owner_key(self, module: str) -> str:
+        """The API key whose user saves this module's workflows, or "".
+
+        RULESCOPE_<MODULE>_WORKFLOW_API_KEY wins; RULESCOPE_WORKFLOW_API_KEY is the
+        single-owner shortcut for every module; LAGPROF_WORKFLOW_API_KEY still
+        works for the lag module."""
+        return (self.module_api_keys.get(module) or self.module_api_keys.get("*")
+                or (self.workflow_api_key if module == "lag" else ""))
 
     @property
     def auth_header(self) -> str:
@@ -94,6 +105,14 @@ def load_config(target_file: str | None, environ: dict[str, str] | None = None,
     for k in keys:
         if environ.get(k):
             values[k] = environ[k]
+    for k, v in environ.items():
+        if re.fullmatch(r"RULESCOPE_(\w+_)?WORKFLOW_API_KEY", k) and v:
+            values[k] = v
+    module_keys = {}
+    for k, v in values.items():
+        m = re.fullmatch(r"RULESCOPE_(?:(\w+)_)?WORKFLOW_API_KEY", k)
+        if m and v:
+            module_keys[(m.group(1) or "*").lower()] = v
 
     target = target_override or values.get("LAGPROF_TARGET", "")
     if target not in TARGETS:
@@ -122,4 +141,5 @@ def load_config(target_file: str | None, environ: dict[str, str] | None = None,
         api_key=api_key, username=user, password=pw, ca_cert=ca,
         verify_tls=values.get("VERIFY_TLS", "true").lower() not in ("false", "0", "no"),
         workflow_api_key=values.get("LAGPROF_WORKFLOW_API_KEY", ""),
+        module_api_keys=module_keys,
     )

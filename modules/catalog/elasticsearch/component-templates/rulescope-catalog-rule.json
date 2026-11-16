@@ -1,0 +1,201 @@
+{
+  "_rulescope_notes": [
+    "Rule fields under rulescope.rule, shared by the current rules index and the daily history. See rulescope-design.md, Rule document fields."
+  ],
+  "template": {
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "rulescope": {
+          "properties": {
+            "rule": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "rule_id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "keyword"
+                },
+                "language": {
+                  "type": "keyword"
+                },
+                "severity": {
+                  "type": "keyword"
+                },
+                "risk_score": {
+                  "type": "long"
+                },
+                "tags": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "building_block": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "long"
+                },
+                "revision": {
+                  "type": "long"
+                },
+                "source": {
+                  "properties": {
+                    "type": {
+                      "type": "keyword"
+                    },
+                    "is_customized": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "prebuilt": {
+                  "type": "boolean"
+                },
+                "author": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "license": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "created_at": {
+                  "type": "date"
+                },
+                "updated_at": {
+                  "type": "date"
+                },
+                "created_by": {
+                  "type": "keyword"
+                },
+                "updated_by": {
+                  "type": "keyword"
+                },
+                "interval_raw": {
+                  "type": "keyword"
+                },
+                "from_raw": {
+                  "type": "keyword"
+                },
+                "interval_s": {
+                  "type": "long"
+                },
+                "lookback_s": {
+                  "type": "long"
+                },
+                "additional_lookback_s": {
+                  "type": "long"
+                },
+                "schedule_parsed": {
+                  "type": "boolean"
+                },
+                "max_signals": {
+                  "type": "long"
+                },
+                "index_patterns": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "index_patterns_local": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "index_patterns_remote": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "index_patterns_csv": {
+                  "type": "keyword",
+                  "ignore_above": 8191
+                },
+                "data_view_id": {
+                  "type": "keyword"
+                },
+                "timestamp_override": {
+                  "type": "keyword"
+                },
+                "timestamp_override_fallback_disabled": {
+                  "type": "boolean"
+                },
+                "timestamp_field": {
+                  "type": "keyword"
+                },
+                "threat": {
+                  "properties": {
+                    "framework": {
+                      "type": "keyword"
+                    },
+                    "tactic": {
+                      "properties": {
+                        "id": {
+                          "type": "keyword"
+                        },
+                        "name": {
+                          "type": "keyword"
+                        }
+                      }
+                    },
+                    "technique": {
+                      "properties": {
+                        "id": {
+                          "type": "keyword"
+                        },
+                        "name": {
+                          "type": "keyword"
+                        }
+                      }
+                    },
+                    "subtechnique": {
+                      "properties": {
+                        "id": {
+                          "type": "keyword"
+                        }
+                      }
+                    }
+                  }
+                },
+                "integrations": {
+                  "type": "keyword"
+                },
+                "required_fields": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "query_hash": {
+                  "type": "keyword"
+                },
+                "last_run": {
+                  "properties": {
+                    "date": {
+                      "type": "date"
+                    },
+                    "status": {
+                      "type": "keyword"
+                    },
+                    "message": {
+                      "type": "keyword",
+                      "ignore_above": 1024
+                    },
+                    "search_duration_ms": {
+                      "type": "long"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

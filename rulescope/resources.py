@@ -18,7 +18,7 @@ def load_json(rel: str | Path) -> dict:
 
 
 def strip_notes(body: dict) -> dict:
-    return {k: v for k, v in body.items() if not k.startswith("_lagprof")}
+    return {k: v for k, v in body.items() if not k.startswith(("_lagprof", "_rulescope"))}
 
 
 def fingerprint(path: str | None, extra: str = "") -> str:
@@ -47,8 +47,11 @@ def role_spaces(opts_workflow: str, space: str | None) -> list[str]:
     return ["*"] if opts_workflow == "all-spaces" or not space else [space]
 
 
-def render_role(spaces: list[str], marker: str | None = None) -> dict:
-    body = strip_notes(load_json("elasticsearch/security/lagprof-workflow-role.json"))
+LAG_ROLE_FILE = "elasticsearch/security/lagprof-workflow-role.json"
+
+
+def render_role(spaces: list[str], marker: str | None = None, path: str = LAG_ROLE_FILE) -> dict:
+    body = strip_notes(load_json(path))
     for entry in body.get("kibana", []):
         if entry.get("spaces") == "__SPACES__":
             entry["spaces"] = spaces
@@ -84,6 +87,25 @@ class Resource:
     module: str = "lag"
 
 
+CATALOG_ROOT = "modules/catalog"
+
+
+def workflow_name(r: Resource, space: str | None) -> str:
+    """The name a workflow resource is installed under, in a global or space scope."""
+    if r.module == "lag":
+        return f"lagprof-hourly-space-{space}" if space else "lagprof-hourly-all-spaces"
+    return f"{r.name}-space-{space}" if space else r.name
+
+
+def render_module_workflow(r: Resource, space: str | None) -> tuple[str, str]:
+    """(output file name, YAML) for a module workflow rendered from its template."""
+    if space is not None and not SPACE_ID_RE.match(space):
+        raise ConfigError("--space must be a valid space ID (a-z, 0-9, _ and -)")
+    scope, params = ("space", {"space_id": space}) if space else ("global", {})
+    text = render_file(r.path, scope, params)
+    return f"{workflow_name(r, space)}.yaml", text
+
+
 def scoped(name: str, space: str | None) -> str:
     """Per-space installs get their own role, dashboard and alert rules.
 
@@ -98,10 +120,39 @@ def pack_resources(space: str | None = None, modules: tuple[str, ...] | list[str
 
     space is set for a per-space install (see scoped())."""
     wanted = [m.name for m in resolve(modules)] if modules is not None else list(MODULES)
+    builders = {"catalog": _catalog_resources, "lag": _lag_resources}
     out: list[Resource] = []
     for name in wanted:
-        out.extend(r for r in _lag_resources(space) if r.module == name)
+        out.extend(builders[name](space))
     return out
+
+
+def _catalog_resources(space: str | None) -> list[Resource]:
+    """The Rule Catalog's resources: pipelines first, because the index templates name
+    rulescope-stamp as their default pipeline."""
+    res: list[Resource] = []
+    root = PACK_ROOT / CATALOG_ROOT / "elasticsearch"
+    pipelines = sorted((root / "ingest-pipelines").glob("*.json"), key=lambda p: (p.stem != "rulescope-stamp", p.stem))
+    for kind, files in (("pipeline", pipelines),
+                        ("component_template", sorted((root / "component-templates").glob("*.json"))),
+                        ("index_template", sorted((root / "index-templates").glob("*.json")))):
+        for p in files:
+            res.append(Resource(kind, p.stem, str(p.relative_to(PACK_ROOT)), module="catalog"))
+    for p in sorted((root / "index-templates").glob("*.json")):
+        body = load_json(p.relative_to(PACK_ROOT))
+        kind = "data_stream" if "data_stream" in body else "index"
+        res.append(Resource(kind, body["index_patterns"][0], str(p.relative_to(PACK_ROOT)), module="catalog"))
+    res.append(Resource("role", scoped("rulescope-catalog", space),
+                        f"{CATALOG_ROOT}/elasticsearch/security/rulescope-catalog-role.json", module="catalog"))
+    res.append(Resource("dashboard", scoped("rulescope-catalog-health", space),
+                        f"{CATALOG_ROOT}/dashboards/rulescope-catalog-health.json", module="catalog"))
+    for p in sorted((PACK_ROOT / CATALOG_ROOT / "alerting").glob("*.json")):
+        res.append(Resource("alert_rule", scoped(load_json(p.relative_to(PACK_ROOT))["id"], space),
+                            str(p.relative_to(PACK_ROOT)), module="catalog"))
+    for wf in ("sync", "snapshot"):
+        res.append(Resource("workflow", f"rulescope-catalog-{wf}", f"{CATALOG_ROOT}/workflows/{wf}.yaml.tmpl",
+                            module="catalog"))
+    return res
 
 
 def _lag_resources(space: str | None) -> list[Resource]:
@@ -178,12 +229,17 @@ def installed_version(client: Client, r: Resource, space: str | None) -> str | N
 # Indices whose documents carry lagprof.space.id. Stream stats and host lag come from
 # raw logs, which aren't divided by space, so a per-space dashboard shows them unfiltered.
 SPACE_SCOPED_INDICES = ("lagprof-results", "lagprof-rules", "lagprof-runs")
+# Catalog documents record the scope that wrote them; a per-space dashboard shows its own.
+SCOPE_FILTERED_INDICES = ("rulescope-catalog-rules", "rulescope-catalog-rule-streams",
+                          "rulescope-catalog-rule-history", "rulescope-catalog-syncs")
 
 
 def scope_query(esql: str, space: str) -> str:
     """Add a space filter after the FROM line of a query on a space-scoped index."""
     first, sep, rest = esql.partition("\n")
     m = re.match(r"\s*FROM\s+(\S+)\s*$", first)
+    if m and m.group(1) in SCOPE_FILTERED_INDICES:
+        return f'{first}\n| WHERE rulescope.scope == "space:{space}"{sep}{rest}'
     if not m or m.group(1) not in SPACE_SCOPED_INDICES:
         return esql
     return f'{first}\n| WHERE lagprof.space.id == "{space}"{sep}{rest}'
@@ -229,7 +285,10 @@ def render_alert_rule(path: str, space: str | None = None) -> dict:
     if space:
         esql = body["params"]["esqlQuery"]["esql"]
         first, _, rest = esql.partition("\n")
-        body["params"]["esqlQuery"]["esql"] = f'{first}\n| WHERE lagprof.space.id == "{space}"\n{rest}'
+        if first.split()[1] in SCOPE_FILTERED_INDICES:
+            body["params"]["esqlQuery"]["esql"] = scope_query(esql, space)
+        else:
+            body["params"]["esqlQuery"]["esql"] = f'{first}\n| WHERE lagprof.space.id == "{space}"\n{rest}'
         body["name"] = f"{body['name']} ({space})"
     return body
 
@@ -237,6 +296,11 @@ def render_alert_rule(path: str, space: str | None = None) -> dict:
 
 LOOKUP_INDEX = "lagprof-rule-streams"
 LOOKUP_TEMPLATE = "elasticsearch/index-templates/lagprof-rule-streams.json"
+# Every lookup index the pack creates, and the index template that holds its mapping.
+LOOKUP_INDICES = {
+    LOOKUP_INDEX: LOOKUP_TEMPLATE,
+    "rulescope-catalog-rule-streams": f"{CATALOG_ROOT}/elasticsearch/index-templates/rulescope-catalog-rule-streams.json",
+}
 
 
 def mapped_fields(mapping: dict, prefix: str = "") -> set[str]:
@@ -251,5 +315,5 @@ def mapped_fields(mapping: dict, prefix: str = "") -> set[str]:
     return out
 
 
-def lookup_template_fields() -> set[str]:
-    return mapped_fields(load_json(LOOKUP_TEMPLATE)["template"]["mappings"])
+def lookup_template_fields(index: str = LOOKUP_INDEX) -> set[str]:
+    return mapped_fields(load_json(LOOKUP_INDICES[index])["template"]["mappings"])

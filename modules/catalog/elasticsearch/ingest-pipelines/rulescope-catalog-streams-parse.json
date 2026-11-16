@@ -1,0 +1,64 @@
+{
+  "description": "rulescope catalog: split a data stream name (type-dataset-namespace) into its parts. A name that doesn't fit is kept with rulescope.parse_error, so one odd name can't fail a sync.",
+  "processors": [
+    {
+      "set": {
+        "tag": "rulescope-pair-seen-at",
+        "field": "@timestamp",
+        "value": "{{{_ingest.timestamp}}}",
+        "description": "When this sync wrote the pair. Stale cleanup keeps pairs written since a sync started."
+      }
+    },
+    {
+      "script": {
+        "lang": "painless",
+        "tag": "rulescope-drop-empty",
+        "description": "Workflow templates render missing values as empty strings; numeric fields reject them.",
+        "source": "Map r = ctx.rulescope?.rule; if (r != null) { for (String k : ['interval_s', 'lookback_s', 'rule_id', 'name', 'type']) { if (r.get(k) instanceof String && ((String) r.get(k)).trim() == '') { r.remove(k); } } }"
+      }
+    },
+    {
+      "dissect": {
+        "tag": "rulescope-split-stream-name",
+        "field": "data_stream.name",
+        "pattern": "%{data_stream.type}-%{data_stream.dataset}-%{data_stream.namespace}"
+      }
+    },
+    {
+      "script": {
+        "lang": "painless",
+        "tag": "rulescope-check-namespace",
+        "source": "if (ctx.data_stream.namespace.contains('-')) { throw new IllegalArgumentException('data stream name has more than three parts: ' + ctx.data_stream.name); }"
+      }
+    },
+    {
+      "pipeline": {
+        "tag": "rulescope-stamp",
+        "name": "rulescope-stamp"
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "remove": {
+        "field": [
+          "data_stream.type",
+          "data_stream.dataset",
+          "data_stream.namespace"
+        ],
+        "ignore_missing": true
+      }
+    },
+    {
+      "set": {
+        "field": "rulescope.parse_error",
+        "value": "{{ _ingest.on_failure_message }}"
+      }
+    },
+    {
+      "pipeline": {
+        "name": "rulescope-stamp"
+      }
+    }
+  ]
+}

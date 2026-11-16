@@ -1,0 +1,59 @@
+{
+  "description": "rulescope catalog: turn a rule from the detection rules find API (sent whole, in raw) into rulescope.rule fields, then drop raw. Records facts (schedule parsed, local and remote patterns, timestamp field); each module decides which rules it can use. The query text is never stored, only query_hash.",
+  "processors": [
+    {
+      "set": {
+        "tag": "rulescope-rule-seen-at",
+        "field": "@timestamp",
+        "value": "{{{_ingest.timestamp}}}",
+        "description": "When this sync saw the rule. Stale cleanup removes rules not seen since the sync started."
+      }
+    },
+    {
+      "script": {
+        "lang": "painless",
+        "tag": "rulescope-parse-rule",
+        "source": "long toSeconds(def raw) {\n  if (raw == null) { return -1L; }\n  String s = raw.toString().trim();\n  if (s.length() < 2) { return -1L; }\n  String unit = s.substring(s.length() - 1);\n  String num = s.substring(0, s.length() - 1);\n  for (int i = 0; i < num.length(); i++) { if (!Character.isDigit(num.charAt(i))) { return -1L; } }\n  long n = Long.parseLong(num);\n  if (unit == 's') { return n; }\n  if (unit == 'm') { return n * 60L; }\n  if (unit == 'h') { return n * 3600L; }\n  if (unit == 'd') { return n * 86400L; }\n  return -1L;\n}\nvoid addUnique(List list, def v) {\n  if (v != null && v.toString() != '' && !list.contains(v.toString())) { list.add(v.toString()); }\n}\nString clip(def v, int n) {\n  if (v == null) { return null; }\n  String s = v.toString();\n  return s.length() > n ? s.substring(0, n) : s;\n}\n\nMap raw = ctx.raw;\nif (raw == null || !(raw instanceof Map)) { throw new IllegalArgumentException('missing raw rule'); }\nif (ctx.rulescope == null) { ctx.rulescope = new HashMap(); }\nMap r = new HashMap();\n\n// Copied as they are.\nfor (String k : ['id', 'rule_id', 'name', 'enabled', 'type', 'language', 'severity', 'risk_score', 'tags',\n                 'version', 'revision', 'author', 'license', 'created_at', 'updated_at', 'created_by',\n                 'updated_by', 'max_signals', 'data_view_id', 'timestamp_override',\n                 'timestamp_override_fallback_disabled']) {\n  def v = raw.get(k);\n  if (v != null && !(v instanceof String && ((String) v).trim() == '')) { r.put(k, v); }\n}\nif (r.name != null) { r.name = clip(r.name, 1024); }\nr.interval_raw = raw.get('interval');\nr.from_raw = raw.get('from');\nr.building_block = raw.get('building_block_type') != null && raw.get('building_block_type').toString() != '';\nr.prebuilt = raw.get('immutable') == true;\ndef rs = raw.get('rule_source');\nif (rs instanceof Map) {\n  r.source = ['type': rs.get('type'), 'is_customized': rs.get('is_customized')];\n}\n\n// Schedule. lookback_s is the whole window (from: now-6m is 360); additional is the part beyond the interval.\nlong interval = toSeconds(raw.get('interval'));\nlong lookback = -1L;\ndef from = raw.get('from');\nif (from != null && from.toString().trim().startsWith('now-')) { lookback = toSeconds(from.toString().trim().substring(4)); }\nif (interval > 0) { r.interval_s = interval; }\nif (lookback > 0) { r.lookback_s = lookback; }\nif (interval > 0 && lookback > 0) { r.additional_lookback_s = lookback - interval; }\nr.schedule_parsed = interval > 0 && lookback > 0;\n\n// Index patterns: remote ones (cluster:pattern) are kept apart for cross-cluster support.\nList pats = new ArrayList();\nList local = new ArrayList();\nList remote = new ArrayList();\ndef idx = raw.get('index');\nif (idx instanceof List) { for (def p : idx) { if (p != null && p.toString().trim() != '') { pats.add(p.toString().trim()); } } }\nfor (String p : pats) { if (p.contains(':')) { remote.add(p); } else { local.add(p); } }\nif (!pats.isEmpty()) { r.index_patterns = pats; }\nif (!local.isEmpty()) { r.index_patterns_local = local; r.index_patterns_csv = String.join(',', local); }\nif (!remote.isEmpty()) { r.index_patterns_remote = remote; }\nr.timestamp_field = r.get('timestamp_override') != null ? r.get('timestamp_override').toString() : '@timestamp';\n\n// ATT&CK, flattened into multi-valued fields.\nList fw = new ArrayList(); List tacId = new ArrayList(); List tacName = new ArrayList();\nList tecId = new ArrayList(); List tecName = new ArrayList(); List subId = new ArrayList();\ndef threat = raw.get('threat');\nif (threat instanceof List) {\n  for (def t : threat) {\n    if (!(t instanceof Map)) { continue; }\n    addUnique(fw, t.get('framework'));\n    def tac = t.get('tactic');\n    if (tac instanceof Map) { addUnique(tacId, tac.get('id')); addUnique(tacName, tac.get('name')); }\n    def techs = t.get('technique');\n    if (techs instanceof List) {\n      for (def te : techs) {\n        if (!(te instanceof Map)) { continue; }\n        addUnique(tecId, te.get('id')); addUnique(tecName, te.get('name'));\n        def subs = te.get('subtechnique');\n        if (subs instanceof List) { for (def su : subs) { if (su instanceof Map) { addUnique(subId, su.get('id')); } } }\n      }\n    }\n  }\n}\nif (!fw.isEmpty() || !tacId.isEmpty()) {\n  r.threat = ['framework': fw, 'tactic': ['id': tacId, 'name': tacName],\n              'technique': ['id': tecId, 'name': tecName], 'subtechnique': ['id': subId]];\n}\n\nList integ = new ArrayList();\ndef ri = raw.get('related_integrations');\nif (ri instanceof List) { for (def i : ri) { if (i instanceof Map) { addUnique(integ, i.get('package')); } } }\nif (!integ.isEmpty()) { r.integrations = integ; }\nList req = new ArrayList();\ndef rf = raw.get('required_fields');\nif (rf instanceof List) { for (def f : rf) { if (f instanceof Map) { addUnique(req, f.get('name')); } } }\nif (!req.isEmpty()) { r.required_fields = req; }\n\n// The query itself isn't stored, only a hash that changes when it does.\ndef q = raw.get('query');\nif (q != null && q.toString() != '') { r.query_hash = q.toString().sha256(); }\n\ndef es = raw.get('execution_summary');\nif (es instanceof Map && es.get('last_execution') instanceof Map) {\n  Map le = es.get('last_execution');\n  Map lr = new HashMap();\n  lr.date = le.get('date');\n  lr.status = le.get('status');\n  if (le.get('message') != null) { lr.message = clip(le.get('message'), 1024); }\n  def m = le.get('metrics');\n  if (m instanceof Map && m.get('total_search_duration_ms') != null) { lr.search_duration_ms = m.get('total_search_duration_ms'); }\n  r.last_run = lr;\n}\n\nctx.rulescope.rule = r;\nctx.remove('raw');"
+      }
+    },
+    {
+      "pipeline": {
+        "tag": "rulescope-stamp",
+        "name": "rulescope-stamp"
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "rulescope.parse_error",
+        "value": "{{ _ingest.on_failure_message }}"
+      }
+    },
+    {
+      "set": {
+        "field": "rulescope.rule.id",
+        "value": "{{ raw.id }}",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "rulescope.rule.name",
+        "value": "{{ raw.name }}",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "remove": {
+        "field": "raw",
+        "ignore_missing": true
+      }
+    },
+    {
+      "pipeline": {
+        "name": "rulescope-stamp"
+      }
+    }
+  ]
+}

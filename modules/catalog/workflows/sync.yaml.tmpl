@@ -1,0 +1,312 @@
+#% # Template for the catalog sync workflow. Rendered by the installer for the global
+#% # scope (one copy, all spaces) or a space scope ([[space_id]] is the space).
+#% # Directives are described in rulescope/render.py.
+#% var space global=foreach.item.id space=consts.space_id
+#% if global
+# rulescope-catalog-sync (global)
+#
+# Syncs every detection rule, enabled or not, from every Kibana space the
+# workflow's role can see. Import it once, in the Default space.
+#% else
+# rulescope-catalog-sync (space [[space_id]])
+#
+# Syncs every detection rule, enabled or not, in one Kibana space.
+#% end
+#
+# Each sync:
+#   1. notes its start time from Elasticsearch's clock
+#   2. fetches rules with the find API (one page of up to 10,000 per space)
+#      and saves each whole rule through rulescope-catalog-rules-parse, which
+#      keeps the catalog fields and drops the rest (the query is kept as a hash)
+#   3. resolves each enabled rule's local index patterns to data streams
+#   4. deletes rules and pairs this scope wrote before the sync started
+#   5. records the sync in rulescope-catalog-syncs
+#
+# The conventions ({{ x | json }}, the no-op delete at the top of each bulk
+# body, the run-start clock) are those of the lag workflow; see
+# kibana/workflows/lagprof-hourly-all-spaces.yaml.
+
+#% if global
+name: rulescope-catalog-sync
+description: rulescope Rule Catalog. Syncs detection rules from all spaces.
+#% else
+name: rulescope-catalog-sync-space-[[space_id]]
+description: rulescope Rule Catalog. Syncs detection rules from the [[space_id]] space.
+#% end
+enabled: true
+tags: [rulescope, rulescope-catalog]
+
+consts:
+#% if global
+  scope: global
+#% else
+  scope: space:[[space_id]]
+  space_id: [[space_id]]
+#% end
+  # The find API fields the catalog reads. Only these are sent to the parse
+  # pipeline (the pick filter), which keeps bulk bodies inside Liquid's limits.
+  # The query is hashed by the pipeline and never stored.
+  rule_fields: [id, rule_id, name, enabled, type, language, severity, risk_score, tags,
+                version, revision, author, license, created_at, updated_at, created_by,
+                updated_by, max_signals, data_view_id, timestamp_override,
+                timestamp_override_fallback_disabled, interval, from, building_block_type,
+                immutable, rule_source, index, threat, related_integrations, required_fields,
+                query, execution_summary]
+
+triggers:
+  - type: scheduled
+    with:
+      every: 1h
+
+settings:
+  # Rendering one bulk body per space with thousands of rules needs more than the
+  # default Liquid limits. These are the maximums Kibana allows.
+  liquid:
+    renderLimit: 2000
+    memoryLimit: 60000000
+  on-failure:
+    fallback:
+      - name: record_failure
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-catalog-syncs/_doc
+          body:
+            rulescope:
+              sync: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+#% if space
+              space: { id: "{{ consts.space_id }}" }
+#% end
+            kind: sync
+            status: failed
+            error: "{{ error.message }}"
+
+steps:
+  - name: run_start
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /_query
+      body:
+        query: ROW started = NOW()
+
+  # ---------------------------------------------------------------------------
+#% if global
+  # Fetch and save every rule, space by space.
+#% else
+  # Fetch and save every rule in this space.
+#% end
+  # ---------------------------------------------------------------------------
+#% if global
+  - name: get_spaces
+    type: kibana.request
+    with:
+      method: GET
+      path: /api/spaces/space
+
+  - name: for_each_space
+    type: foreach
+    foreach: "${{ steps.get_spaces.output }}"
+    steps:
+#% end
+#% indent global 4
+  - name: get_rules
+    type: kibana.request
+    # Rules average about 4.5 KB with their query and notes; the 10 MB default
+    # step limit fails at about 2,300 rules.
+    max-step-size: 64mb
+    with:
+      method: GET
+      path: >-
+        {% if [[space]] != 'default' %}/s/{{ [[space]] }}{% endif %}/api/detection_engine/rules/_find?per_page=10000&page=1
+
+  - name: save_rules
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /_bulk?refresh=wait_for
+      headers:
+        Content-Type: application/x-ndjson
+      body: |
+        {"delete":{"_index":"rulescope-catalog-rules","_id":"__rulescope_noop__"}}
+        {% for r in steps.get_rules.output.data %}{"index":{"_index":"rulescope-catalog-rules","_id":"{{ [[space]] }}:{{ r.id }}","pipeline":"rulescope-catalog-rules-parse"}}
+        {"rulescope":{"sync":{"id":"{{ execution.id }}"},"scope":{{ consts.scope | json }},"space":{"id":{{ [[space]] | json }}}},"raw":{{ r | pick: consts.rule_fields | json }}}
+        {% endfor %}
+
+  - name: check_save_rules
+    type: if
+    condition: "steps.save_rules.output.errors : true"
+    steps:
+      - name: save_rules_failed
+        type: elasticsearch.request
+        with:
+          method: GET
+          # Fails on purpose: stops the run so the failure fallback records why.
+          path: /_rulescope_error/rule_bulk_write_failed_see_step_save_rules
+
+  - name: check_rule_cap
+    # One page of 10,000. If the space has more, the rest aren't in the catalog.
+    type: if
+    condition: "steps.get_rules.output.total > 10000"
+    steps:
+      - name: record_rule_cap
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-catalog-syncs/_doc
+          body:
+            rulescope:
+              sync: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+              space: { id: "{{ [[space]] }}" }
+            kind: rule_cap
+            total: "${{ steps.get_rules.output.total }}"
+#% end
+
+  # ---------------------------------------------------------------------------
+  # Resolve each enabled rule's local index patterns to data streams.
+  # ---------------------------------------------------------------------------
+  - name: get_enabled_rules
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-rules/_search
+      body:
+        size: 10000
+        _source: [rulescope.space.id, rulescope.rule]
+        query:
+          bool:
+            filter:
+              # Written since this sync started: by this sync, or an overlapping one.
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - term: { rulescope.rule.enabled: true }
+              - exists: { field: rulescope.rule.index_patterns_csv }
+
+  - name: for_each_rule
+    type: foreach
+    foreach: "${{ steps.get_enabled_rules.output.hits.hits }}"
+    steps:
+      - name: resolve_streams
+        type: elasticsearch.request
+        with:
+          method: GET
+          # Only data_streams in the response are used; plain indices and aliases are ignored.
+          path: "/_resolve/index/{{ foreach.item._source.rulescope.rule.index_patterns_csv }}?expand_wildcards=open&ignore_unavailable=true&allow_no_indices=true"
+
+      - name: save_pairs
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /_bulk
+          headers:
+            Content-Type: application/x-ndjson
+          body: |
+            {"delete":{"_index":"rulescope-catalog-rule-streams","_id":"__rulescope_noop__"}}
+            {% for ds in steps.resolve_streams.output.data_streams %}{"index":{"_index":"rulescope-catalog-rule-streams","_id":"{{ foreach.item._id }}:{{ ds.name }}","pipeline":"rulescope-catalog-streams-parse"}}
+            {"data_stream":{"name":{{ ds.name | json }}},"rulescope":{"sync":{"id":"{{ execution.id }}"},"scope":{{ consts.scope | json }},"space":{"id":{{ foreach.item._source.rulescope.space.id | json }}},"rule":{"id":{{ foreach.item._source.rulescope.rule.id | json }},"rule_id":{{ foreach.item._source.rulescope.rule.rule_id | default: "" | json }},"name":{{ foreach.item._source.rulescope.rule.name | default: "" | json }},"type":{{ foreach.item._source.rulescope.rule.type | default: "" | json }},"interval_s":{{ foreach.item._source.rulescope.rule.interval_s | default: "" | json }},"lookback_s":{{ foreach.item._source.rulescope.rule.lookback_s | default: "" | json }},"schedule_parsed":{{ foreach.item._source.rulescope.rule.schedule_parsed | json }},"timestamp_field":{{ foreach.item._source.rulescope.rule.timestamp_field | json }}}}}
+            {% endfor %}
+
+      - name: check_save_pairs
+        type: if
+        condition: "steps.save_pairs.output.errors : true"
+        steps:
+          - name: save_pairs_failed
+            type: elasticsearch.request
+            with:
+              method: GET
+              # Fails on purpose: stops the run so the failure fallback records why.
+              path: /_rulescope_error/pair_bulk_write_failed_see_step_save_pairs
+
+  - name: refresh_pairs
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-rule-streams/_refresh
+
+  # ---------------------------------------------------------------------------
+  # Remove rules and pairs from earlier syncs in this scope (deleted rules,
+  # removed data streams, rules disabled since). Reached only if the stages
+  # above succeeded, and pairs are written first, so readers never see an
+  # empty catalog.
+  # ---------------------------------------------------------------------------
+  - name: delete_stale
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-rules,rulescope-catalog-rule-streams/_delete_by_query?refresh=true&conflicts=proceed
+      body:
+        query:
+          bool:
+            filter:
+              # Only this copy's documents.
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - range: { "@timestamp": { lt: "{{ steps.run_start.output.values[0][0] }}" } }
+            must_not:
+              - term: { rulescope.sync.id: "{{ execution.id }}" }
+
+  # ---------------------------------------------------------------------------
+  # Record the sync.
+  # ---------------------------------------------------------------------------
+  - name: count_rules
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-rules/_search
+      body:
+        size: 0
+        track_total_hits: true
+        query:
+          bool:
+            filter:
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+        aggs:
+          enabled: { filter: { term: { rulescope.rule.enabled: true } } }
+          spaces: { cardinality: { field: rulescope.space.id } }
+
+  - name: count_pairs
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-rule-streams/_count
+      body:
+        query:
+          bool:
+            filter:
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - range: { "@timestamp": { gte: "{{ steps.run_start.output.values[0][0] }}" } }
+
+  - name: count_rule_caps
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-syncs/_count?ignore_unavailable=true
+      body:
+        query:
+          bool:
+            filter:
+              - term: { kind: rule_cap }
+              - term: { rulescope.sync.id: "{{ execution.id }}" }
+
+  - name: record_success
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-syncs/_doc
+      body:
+        rulescope:
+          sync: { id: "{{ execution.id }}" }
+          scope: "{{ consts.scope }}"
+#% if space
+          space: { id: "{{ consts.space_id }}" }
+#% end
+        kind: sync
+        status: success
+        started: "{{ steps.run_start.output.values[0][0] }}"
+        rules_seen: "${{ steps.count_rules.output.hits.total.value }}"
+        rules_enabled: "${{ steps.count_rules.output.aggregations.enabled.doc_count }}"
+        spaces: "${{ steps.count_rules.output.aggregations.spaces.value }}"
+        pairs_written: "${{ steps.count_pairs.output.count }}"
+        rule_cap_spaces: "${{ steps.count_rule_caps.output.count }}"

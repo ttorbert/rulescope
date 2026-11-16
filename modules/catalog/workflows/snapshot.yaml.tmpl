@@ -1,0 +1,149 @@
+#% # Template for the catalog snapshot workflow. Rendered by the installer for the
+#% # global scope or a space scope ([[space_id]] is the space).
+#% # Directives are described in rulescope/render.py.
+#% if global
+# rulescope-catalog-snapshot (global)
+#% else
+# rulescope-catalog-snapshot (space [[space_id]])
+#% end
+#
+# Once a day, copies this scope's rules from rulescope-catalog-rules into the
+# rulescope-catalog-rule-history data stream, one document per rule per day
+# with the ID <date>:<space>:<rule id>.
+#
+# It runs hourly but copies only when today's snapshot hasn't succeeded yet and
+# a sync succeeded in the last 2 hours. So a new install, whose first runs start
+# together, waits for the first sync instead of saving an empty day, and a
+# failed snapshot is retried within the hour. A copy that's repeated anyway
+# skips rules already copied (op_type create, conflicts proceed).
+#
+# The date comes from Elasticsearch's clock, in UTC.
+
+#% if global
+name: rulescope-catalog-snapshot
+description: rulescope Rule Catalog. Daily snapshot of the rule catalog, all spaces.
+#% else
+name: rulescope-catalog-snapshot-space-[[space_id]]
+description: rulescope Rule Catalog. Daily snapshot of the rule catalog for the [[space_id]] space.
+#% end
+enabled: true
+tags: [rulescope, rulescope-catalog]
+
+consts:
+#% if global
+  scope: global
+#% else
+  scope: space:[[space_id]]
+  space_id: [[space_id]]
+#% end
+
+triggers:
+  - type: scheduled
+    with:
+      every: 1h
+
+settings:
+  on-failure:
+    fallback:
+      - name: record_failure
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-catalog-syncs/_doc
+          body:
+            rulescope:
+              sync: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+#% if space
+              space: { id: "{{ consts.space_id }}" }
+#% end
+            kind: snapshot
+            status: failed
+            error: "{{ error.message }}"
+
+steps:
+  - name: today
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /_query
+      body:
+        query: ROW day = DATE_FORMAT("yyyy-MM-dd", NOW())
+
+  - name: done_today
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-syncs/_count
+      body:
+        query:
+          bool:
+            filter:
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - term: { kind: snapshot }
+              - term: { status: success }
+              - term: { day: "{{ steps.today.output.values[0][0] }}" }
+              # A snapshot of an empty catalog doesn't count; the next run tries again.
+              - range: { total: { gt: 0 } }
+
+  - name: fresh_sync
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-syncs/_count
+      body:
+        query:
+          bool:
+            filter:
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+              - term: { kind: sync }
+              - term: { status: success }
+              - range: { "@timestamp": { gte: now-2h } }
+
+  - name: snapshot
+    type: if
+    condition: "steps.done_today.output.count : 0 and steps.fresh_sync.output.count > 0"
+    steps:
+      - name: copy_rules
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /_reindex?refresh=true
+          body:
+            conflicts: proceed
+            source:
+              index: rulescope-catalog-rules
+              query:
+                bool:
+                  filter:
+                    - term: { rulescope.scope: "{{ consts.scope }}" }
+            dest:
+              index: rulescope-catalog-rule-history
+              op_type: create
+            script:
+              lang: painless
+              source: >-
+                ctx._id = params.day + ':' + ctx._id;
+                ctx._source['@timestamp'] = params.day + 'T00:00:00Z';
+                ctx._source.rulescope.sync = ['id': params.run];
+              params:
+                day: "{{ steps.today.output.values[0][0] }}"
+                run: "{{ execution.id }}"
+
+      - name: record_success
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-catalog-syncs/_doc
+          body:
+            rulescope:
+              sync: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+#% if space
+              space: { id: "{{ consts.space_id }}" }
+#% end
+            kind: snapshot
+            status: success
+            day: "{{ steps.today.output.values[0][0] }}"
+            rules_copied: "${{ steps.copy_rules.output.created }}"
+            total: "${{ steps.copy_rules.output.total }}"

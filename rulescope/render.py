@@ -5,6 +5,7 @@ A template is the workflow YAML plus a few line directives. Directives start wit
 the Liquid `{{ }}` and `{% %}` that Kibana evaluates at run time:
 
     #% var NAME global=TEXT space=TEXT   define [[NAME]] for each scope
+                                        (the installer also passes values, e.g. [[space_id]])
     #% if global | #% if space           keep the lines up to #% else / #% end
     #% else                             in that scope only
     #% indent global N | space N         indent the lines up to #% end by N spaces
@@ -37,11 +38,15 @@ class TemplateError(ConfigError):
     pass
 
 
-def render_template(text: str, scope: str, source: str = "template") -> str:
-    """Render a workflow template for one scope."""
+def render_template(text: str, scope: str, source: str = "template",
+                    params: dict[str, str] | None = None) -> str:
+    """Render a workflow template for one scope.
+
+    params are values the installer supplies, such as space_id for a space scope;
+    [[name]] uses them unless a #% var of the same name is defined."""
     if scope not in SCOPES:
         raise TemplateError(f"{source}: unknown scope {scope!r}; expected one of {', '.join(SCOPES)}")
-    variables: dict[str, str] = {}
+    variables: dict[str, str] = dict(params or {})
     # Each open block: [kind, keeping lines?, extra indent, line number]
     stack: list[list] = []
     out: list[str] = []
@@ -103,8 +108,8 @@ def render_template(text: str, scope: str, source: str = "template") -> str:
     return "".join(out)
 
 
-def render_file(rel: str, scope: str) -> str:
-    return render_template((PACK_ROOT / rel).read_text(), scope, source=rel)
+def render_file(rel: str, scope: str, params: dict[str, str] | None = None) -> str:
+    return render_template((PACK_ROOT / rel).read_text(), scope, source=rel, params=params)
 
 
 def generated_workflows() -> dict[str, str]:

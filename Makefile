@@ -8,7 +8,7 @@
 #   make check|install|status|uninstall TARGET=targets/prod.env
 #   make test-pipelines             run the ingest pipeline fixtures against the lab
 #   make validate [RUN=name]        lab validation against real rule alerts (~105 min)
-#   make dashboard                  check the dashboard queries and rebuild its JSON
+#   make dashboard                  check the dashboard queries and rebuild their JSON
 #   make simulate                   full formula simulation (100k trials per point)
 #   make render                     regenerate kibana/workflows/*.yaml from the workflow template
 
@@ -93,6 +93,7 @@ validate:
 
 dashboard:
 	$(WITH_LAB_ENV) $(PYTHON) kibana/dashboards/build.py --check --target-file $(TARGET)
+	$(WITH_LAB_ENV) $(PYTHON) modules/catalog/dashboards/build.py --check --target-file $(TARGET)
 
 test-pipelines:
 	$(WITH_LAB_ENV) $(PYTHON) tests/pipelines/run_simulate.py --target-file $(TARGET)
@@ -101,6 +102,6 @@ test-pipelines:
 
 package:
 	@mkdir -p dist
-	zip -qr dist/ingest-lag-profiler-$$(cat VERSION).zip VERSION README.md elasticsearch esql kibana \
+	zip -qr dist/ingest-lag-profiler-$$(cat VERSION).zip VERSION README.md elasticsearch esql kibana modules \
 	    rulescope scripts/lagprof.py targets/*.example docs
 	@echo "dist/ingest-lag-profiler-$$(cat VERSION).zip"

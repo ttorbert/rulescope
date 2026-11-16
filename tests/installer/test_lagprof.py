@@ -119,17 +119,18 @@ def make_handler(fake: FakeCluster):
                     return self._send(200, {"acknowledged": True})
                 if method == "GET":
                     return self._send(200, {"data_streams": [{}]}) if path in fake.store else self._send(404, {})
-            if path.startswith("/lagprof-*,") and path.endswith("/_mapping") and method == "PUT":
+            if path.startswith(("/lagprof-*,", "/rulescope-catalog-*,")) and path.endswith("/_mapping") and method == "PUT":
                 fake.store[path] = body  # mapping update on existing lagprof-* indices
                 return self._send(200, {"acknowledged": True})
             if path.endswith("/_mapping") and path[:-len("/_mapping")] in fake.store:
                 idx = path[:-len("/_mapping")]
                 return self._send(200, {idx.lstrip("/"): {"mappings": fake.store[idx]}})
-            if path in ("/lagprof-rules", "/lagprof-rule-streams"):
+            if path in ("/lagprof-rules", "/lagprof-rule-streams", "/rulescope-catalog-rules",
+                        "/rulescope-catalog-rule-streams"):
                 if method == "PUT":
                     # Like Elasticsearch, a new index takes its mapping from the index template.
-                    fake.store[path] = (lagprof.load_json(lagprof.LOOKUP_TEMPLATE)["template"]["mappings"]
-                                        if path == "/lagprof-rule-streams" else {})
+                    lookup = resources.LOOKUP_INDICES.get(path.lstrip("/"))
+                    fake.store[path] = lagprof.load_json(lookup)["template"]["mappings"] if lookup else {}
                     fake.index_creates = getattr(fake, "index_creates", 0) + 1
                     return self._send(200, {"acknowledged": True})
                 if method == "DELETE":
@@ -657,6 +658,135 @@ class InstallTests(FakeServerCase):
         self.assertIn(("current", "pipeline", "lagprof-stamp"), self.statuses())
 
 
+class CatalogInstallTests(FakeServerCase):
+    def install(self, **kw):
+        opts = lagprof.InstallOptions(modules=("catalog",), **kw)
+        return lagprof.install(self.client, self.rep, opts)
+
+    def test_global_install_is_idempotent(self):
+        self.assertEqual(self.install(), 0, self.out.getvalue())
+        self.assertEqual({s for s, k, n in self.statuses() if s != "WARN"}, {"created"})
+        names = sorted(w["name"] for w in self.fake.workflows.values())
+        self.assertEqual(names, ["rulescope-catalog-snapshot", "rulescope-catalog-sync"])
+        self.assertEqual(self.fake.store["/api/security/role/rulescope-catalog"]["kibana"][0]["spaces"], ["*"])
+        self.assertNotIn("_rulescope_notes", self.fake.store["/_index_template/rulescope-catalog-rules"])
+        self.assertIn("/_data_stream/rulescope-catalog-syncs", self.fake.store)
+        self.assertIn("/rulescope-catalog-rule-streams", self.fake.store)
+        # Nothing of the lag module.
+        self.assertFalse([k for k in self.fake.store if "lagprof" in k])
+        self.rep.lines.clear()
+        self.assertEqual(self.install(), 0)
+        self.assertEqual({s for s, k, n in self.statuses() if s != "WARN"}, {"unchanged"})
+
+    def test_per_space_copy(self):
+        self.assertEqual(self.install(workflow="per-space", space="soc"), 0, self.out.getvalue())
+        wf = {w["name"]: w for w in self.fake.workflows.values()}
+        self.assertEqual(sorted(wf), ["rulescope-catalog-snapshot-space-soc", "rulescope-catalog-sync-space-soc"])
+        self.assertEqual({w["space"] for w in wf.values()}, {"soc"})
+        self.assertIn("scope: space:soc", wf["rulescope-catalog-sync-space-soc"]["yaml"])
+        self.assertEqual(self.fake.store["/api/security/role/rulescope-catalog-soc"]["kibana"][0]["spaces"], ["soc"])
+        # Dashboard and alert cover only this scope.
+        dash = self.fake.store["/api/dashboards/rulescope-catalog-health-soc"]
+        queries = [json.dumps(p) for p in dash["panels"] if p["type"] == "vis"]
+        self.assertTrue(queries)
+        for q in queries:
+            self.assertIn('WHERE rulescope.scope == \\"space:soc\\"', q)
+        self.assertEqual(dash["title"], "Rule Catalog (soc)")
+        alert = self.fake.store["/api/alerting/rule/rulescope-catalog-stale-soc"]
+        self.assertIn('rulescope.scope == "space:soc"', alert["params"]["esqlQuery"]["esql"])
+
+    def test_one_scope_per_cluster(self):
+        self.install(workflow="per-space", space="soc")
+        self.rep.lines.clear()
+        self.assertEqual(self.install(), 1)
+        self.assertIn(("BLOCKED", "workflow", "all-spaces"), self.statuses())
+        self.assertEqual(self.install(force=True), 0)
+
+    def test_global_blocks_per_space(self):
+        self.install()
+        self.rep.lines.clear()
+        self.assertEqual(self.install(workflow="per-space", space="soc"), 1)
+        self.assertIn("global catalog is installed", self.out.getvalue())
+
+    def test_catalog_scope_does_not_block_lag(self):
+        self.install()
+        opts = lagprof.InstallOptions(workflow="per-space", space="soc", shared_stats=True)
+        self.assertEqual(lagprof.install(self.client, self.rep, opts), 0, self.out.getvalue())
+
+    def test_uninstall_space_copy_keeps_shared_until_last(self):
+        self.install(workflow="per-space", space="soc")
+        self.install(workflow="per-space", space="team-b")
+        self.rep.lines.clear()
+        lagprof.uninstall(self.client, self.rep, True, "soc", modules=("catalog",))
+        self.assertIn("/_ingest/pipeline/rulescope-catalog-rules-parse", self.fake.store)
+        path, body = self.fake.delete_by_query[-1]
+        self.assertTrue(path.startswith("/rulescope-catalog-*/"))
+        self.assertEqual(body, {"query": {"term": {"rulescope.scope": "space:soc"}}})
+        self.assertEqual(sorted(w["name"] for w in self.fake.workflows.values()),
+                         ["rulescope-catalog-snapshot-space-team-b", "rulescope-catalog-sync-space-team-b"])
+        lagprof.uninstall(self.client, self.rep, True, "team-b", modules=("catalog",))
+        self.assertNotIn("/_ingest/pipeline/rulescope-catalog-rules-parse", self.fake.store)
+        self.assertIn(("DELETE", "/_data_stream/rulescope-catalog-*"), self.fake.requests)
+        self.assertFalse(self.fake.workflows)
+
+    def test_uninstall_catalog_leaves_lag(self):
+        lagprof.install(self.client, self.rep, lagprof.InstallOptions(modules=("catalog", "lag")))
+        lagprof.uninstall(self.client, self.rep, False, modules=("catalog",))
+        self.assertEqual([w["name"] for w in self.fake.workflows.values()], ["lagprof-hourly-all-spaces"])
+        self.assertIn("/_ingest/pipeline/lagprof-rules-parse", self.fake.store)
+        self.assertNotIn("/_ingest/pipeline/rulescope-catalog-rules-parse", self.fake.store)
+
+    def test_catalog_owner_key(self):
+        self.cfg.module_api_keys = {"catalog": "owner-cat"}
+        self.client = lagprof.Client(self.cfg)
+        self.install()
+        self.assertEqual(self.fake.workflow_auth, "ApiKey owner-cat")
+        self.assertNotIn("WORKFLOW_API_KEY not set", self.out.getvalue())
+
+    def test_warns_without_catalog_owner_key(self):
+        self.install()
+        self.assertIn("RULESCOPE_CATALOG_WORKFLOW_API_KEY not set", self.out.getvalue())
+
+    def test_status_finds_catalog(self):
+        self.install()
+        self.rep.lines.clear()
+        lagprof.status(self.client, self.rep, modules=("catalog",))
+        st = self.statuses()
+        self.assertIn(("current", "pipeline", "rulescope-stamp"), st)
+        self.assertTrue(any(s == "present" and k == "workflow" for s, k, n in st))
+
+
+class CatalogRenderTests(unittest.TestCase):
+    def test_both_scopes_render(self):
+        for r in resources.pack_resources(modules=["catalog"]):
+            if r.kind != "workflow":
+                continue
+            name, text = resources.render_module_workflow(r, None)
+            self.assertEqual(name, f"{r.name}.yaml")
+            self.assertIn("scope: global", text)
+            self.assertNotIn("space_id", text)
+            name, text = resources.render_module_workflow(r, "soc")
+            self.assertEqual(name, f"{r.name}-space-soc.yaml")
+            self.assertIn(f"name: {r.name}-space-soc", text)
+            self.assertIn("space_id: soc", text)
+            for t in (text,):
+                self.assertNotIn("[[", t)
+                self.assertNotIn("#%", t)
+
+    def test_bad_space_refused(self):
+        r = next(r for r in resources.pack_resources(modules=["catalog"]) if r.kind == "workflow")
+        with self.assertRaises(lagprof.ConfigError):
+            resources.render_module_workflow(r, "Bad Space")
+
+    def test_owner_key_settings(self):
+        env = {"LAGPROF_TARGET": "docker", "ES_URL": "x", "KIBANA_URL": "y", "ES_API_KEY": "k"}
+        cfg = lagprof.load_config(None, {**env, "RULESCOPE_CATALOG_WORKFLOW_API_KEY": "c",
+                                         "LAGPROF_WORKFLOW_API_KEY": "l"})
+        self.assertEqual((cfg.owner_key("catalog"), cfg.owner_key("lag")), ("c", "l"))
+        cfg = lagprof.load_config(None, {**env, "RULESCOPE_WORKFLOW_API_KEY": "all"})
+        self.assertEqual((cfg.owner_key("catalog"), cfg.owner_key("lag")), ("all", "all"))
+
+
 class ModuleTests(unittest.TestCase):
     def test_default_is_lag(self):
         self.assertEqual(modules.parse_modules(None), ("lag",))
@@ -679,11 +809,21 @@ class ModuleTests(unittest.TestCase):
             modules.MODULES.clear()
             modules.MODULES.update(saved)
 
-    def test_lag_module_owns_every_current_resource(self):
+    def test_every_resource_belongs_to_one_module(self):
         everything = resources.pack_resources()
-        self.assertEqual(everything, resources.pack_resources(modules=["lag"]))
-        self.assertTrue(everything)
-        self.assertEqual({r.module for r in everything}, {"lag"})
+        cat, lag = resources.pack_resources(modules=["catalog"]), resources.pack_resources(modules=["lag"])
+        self.assertEqual(everything, cat + lag)
+        self.assertEqual({r.module for r in cat}, {"catalog"})
+        self.assertEqual({r.module for r in lag}, {"lag"})
+        keys = [(r.kind, r.name) for r in everything]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_catalog_pipelines_come_before_templates(self):
+        kinds = [r.kind for r in resources.pack_resources(modules=["catalog"])]
+        self.assertEqual(kinds[0], "pipeline")
+        self.assertLess(max(i for i, k in enumerate(kinds) if k == "pipeline"),
+                        min(i for i, k in enumerate(kinds) if k.endswith("template")))
+        self.assertEqual(resources.pack_resources(modules=["catalog"])[0].name, "rulescope-stamp")
 
     def test_cli_rejects_unknown_module(self):
         err = io.StringIO()

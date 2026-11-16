@@ -16,7 +16,8 @@ The lag-only code is tagged `v0.1.0-lab` as a checkpoint.
 | --- | --- |
 | 1. Installer package and module support | Done: `python3 -m rulescope`, no behavior change |
 | 2. Workflow templates and rendering | Done: both lag workflows are rendered from one template, byte for byte; lint checks bulk row positions against each query's `KEEP` |
-| 3. Catalog module | Next |
+| 3. Catalog module | Done: sync and snapshot workflows in both scopes, pipelines, role, dashboard and stale-catalog alert. See [modules/catalog/README.md](modules/catalog/README.md). The lab syncs 2,302 rules in Default (2,304 in all) with disabled rules; the overlap test and a least-privilege run pass |
+| 4. Lag module onto the catalog | Next |
 
 ## Status at a glance (Nov 14, 2026)
 

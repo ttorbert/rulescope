@@ -1,0 +1,60 @@
+{
+  "_rulescope_notes": [
+    "Identity fields on every rulescope document: which sync or run wrote it, its scope (global or space:<id>), space, cluster and tenant.",
+    "index.default_pipeline is rulescope-stamp, the one place that reaches every document. Requests that name their own pipeline skip it, so the parse pipelines call rulescope-stamp themselves."
+  ],
+  "template": {
+    "settings": {
+      "index": {
+        "default_pipeline": "rulescope-stamp"
+      }
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "rulescope": {
+          "properties": {
+            "sync": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "scope": {
+              "type": "keyword"
+            },
+            "space": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "cluster": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "tenant": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "parse_error": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        }
+      }
+    }
+  }
+}

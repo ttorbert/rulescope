@@ -172,7 +172,7 @@ ATT&CK mappings are flattened into multi-valued fields rather than kept as neste
 
 ### Sync run fields
 
-`rulescope-catalog-syncs` records each run: `rulescope.sync.id`, `rulescope.scope`, `status` (`success`, `failed`, `partial`), `started`, `finished`, `spaces`, `rules_seen`, `rules_enabled`, `pairs_written`, `rule_cap_hit`, and `error`.
+`rulescope-catalog-syncs` records each run: `rulescope.sync.id`, `rulescope.scope`, `kind` (`sync` or `snapshot`), `status` (`success` or `failed`), `started`, `@timestamp` (finished), `spaces`, `rules_seen`, `rules_enabled`, `pairs_written`, `rule_cap_spaces`, and `error`. Snapshots add `day`, `rules_copied` and `total`. A space over the 10,000-rule cap gets its own `kind: rule_cap` document, and the sync record counts them in `rule_cap_spaces`. A Workflows `foreach` can't add up a flag across spaces, so the sync counts these documents at the end instead.
 
 ### Privacy
 
@@ -188,7 +188,7 @@ The catalog stores rule metadata, not rule logic or event data:
 | Workflow | Schedule | Does |
 | --- | --- | --- |
 | `rulescope-catalog-sync` | Hourly | Fetch rules, save them, resolve patterns, clean up stale documents, record the sync |
-| `rulescope-catalog-snapshot` | Daily | Copy the rules index into the history data stream with that day's date |
+| `rulescope-catalog-snapshot` | Hourly, copies once a day | Copy the rules index into the history data stream with that day's date, after a successful sync |
 
 Both are generated from one template per workflow in `global` and `space:` versions. See [Workflow generation](#workflow-generation).
 
@@ -205,13 +205,21 @@ The sync reuses what the lag workflows already proved in the lab:
 
 **Including disabled rules makes each fetch larger.** In the lab, all 2,302 rules come back in one page. Rules average about 4.5 KB, so that's around 10 MB, inside the 64 MB step limit the lag workflow already sets. Only enabled rules go through pattern resolution, so the number of loop iterations doesn't grow.
 
+**As built (step 3, confirmed on 9.5.6):**
+- Each rule is sent to the parse pipeline whole, as `raw`, with `{{ r | pick: consts.rule_fields | json }}`. Painless extracts the fields and removes `raw`. This replaces listing every field in Liquid.
+- Sending whole rules, notes and setup guides included, exceeded Liquid's default render limits. `pick`, a Kibana filter that keeps only the listed fields, fixed it. The sync also raises `settings.liquid.renderLimit` and `memoryLimit` to their maximums (2,000 ms and 60,000,000).
+- In the lab, a global sync of 2,304 rules in 2 spaces takes about 6 seconds. Three overlapping syncs left exactly 2,304 rules and 16 pairs, each recording success.
+- Painless has `String.sha256()`, used for `query_hash`.
+
 ### Daily snapshot
 
 The snapshot workflow copies the rules index into the history data stream with one `_reindex` request:
 - `op_type: create`, which data streams require;
 - a script that sets `@timestamp` to the snapshot date and `_id` to `<date>:<space>:<rule id>`.
 
-A second run on the same day then skips existing documents instead of duplicating them. Confirm that `_reindex` into a data stream keeps script-set IDs. If it doesn't, the workflow can read the rules and write them with `_bulk` create, as the lag workflow writes its results.
+A second run on the same day then skips existing documents instead of duplicating them, with `conflicts: proceed` so the conflicts don't fail the step. **Confirmed in the lab:** `_reindex` into a data stream keeps script-set IDs.
+
+**As built:** the snapshot runs hourly but copies only when today's snapshot hasn't succeeded with at least one rule, and a sync has succeeded in the last 2 hours. A newly imported scheduled workflow runs straight away, so a daily snapshot imported with the sync would otherwise save an empty first day. The guard also retries a failed snapshot within the hour. Document IDs are unique per backing index, so a same-day rerun after a rollover could duplicate that day. That's rare, and dashboards count distinct rules per day.
 
 ### Parsing moves out of the lag module
 
@@ -284,7 +292,7 @@ The lag module reads rule settings that are at most one sync old, which is up to
 
 With four modules and two scopes, hand-kept YAML copies would mean up to eight near-identical files. Instead:
 
-- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`. (Built in step 2: the lag template is `kibana/workflows/lagprof-hourly.yaml.tmpl` until the module folders arrive in step 4. Its directives are line-based `#%` comments, so they never collide with Liquid; see `rulescope/render.py`.)
+- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`. The catalog's are in [modules/catalog/workflows/](modules/catalog/workflows/). (Built in step 2: the lag template is `kibana/workflows/lagprof-hourly.yaml.tmpl` until the module folders arrive in step 4. Its directives are line-based `#%` comments, so they never collide with Liquid; see `rulescope/render.py`.)
 - `rulescope render` produces the `global` and `space:<id>` versions, using Python's standard library only, as the installer does today.
 - `lint` renders every version and checks:
   - the ES|QL queries match `modules/<module>/esql/`;
@@ -320,7 +328,9 @@ rulescope uninstall --target-file targets/prod.env --modules coverage --scope sp
 | `rulescope-coverage` | Workflows, only if it has a workflow | Read on `rulescope-catalog-*`; write on `rulescope-coverage-*` |
 | `rulescope-schedule` | Workflows, only if it has a workflow | Read on `rulescope-catalog-*`; write on `rulescope-schedule-*` |
 
-Per-space roles add the space ID to the name, as today. The `view_index_metadata` privilege for `_resolve/index` is carried over from today's role, which also has `read` on `logs-*`. Confirm in the lab that the catalog works without `read`.
+Per-space roles add the space ID to the name, as today. **Confirmed in the lab (step 3):** the catalog role, with `view_index_metadata` on `logs-*` and no `read`, is enough for a full sync, `_resolve/index` included. A user with only that role resolved the same pairs as an administrator.
+
+**Owner keys:** `RULESCOPE_<MODULE>_WORKFLOW_API_KEY` per module, or `RULESCOPE_WORKFLOW_API_KEY` for one owner of every module. `LAGPROF_WORKFLOW_API_KEY` still works for the lag module.
 
 **Workflow owners.** Scheduled runs use the permissions of the account that last saved the workflow. Today that's one dedicated user with one API key. With per-module roles, there are two options:
 
@@ -411,7 +421,7 @@ Steps 0 to 6 total about 41 to 65 hours before the first public release.
 | Scope creep before the first release | Release slips | Coverage, schedule and cross-cluster come after `v0.2.0` |
 | Cross-cluster assumptions turn out wrong | Later rework | Schema fields and naming are in place now; the risky assumptions are listed to confirm in step 9 |
 | The rule cap at 10,000 per space | Large spaces are cut off | The notice stays; add paging in step 3 if a lab test with more than 10,000 rules is practical |
-| Workflow limits at scale | Runs time out with many rules or spaces | Measure step counts and run time with 2,302 rules in several spaces during step 3 |
+| Workflow limits at scale | Runs time out with many rules or spaces | Measured in step 3: 2,304 rules in 2 spaces sync in about 6 seconds. Liquid's maximum limits (2 seconds, 60 million) cap how many rules one bulk body can hold; very large spaces will need paging |
 
 ## Open questions
 

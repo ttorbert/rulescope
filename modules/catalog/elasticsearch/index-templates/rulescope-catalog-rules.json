@@ -1,0 +1,10 @@
+{
+  "index_patterns": [
+    "rulescope-catalog-rules"
+  ],
+  "composed_of": [
+    "rulescope-common",
+    "rulescope-catalog-rule"
+  ],
+  "priority": 500
+}

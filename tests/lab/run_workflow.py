@@ -5,7 +5,7 @@
     run_workflow.py build/lagprof-hourly-space-soc.yaml --space soc
 
 Prints the execution status, failed steps with their errors, and document counts
-in the lagprof-* indices.
+in the lagprof-* indices (or rulescope-catalog-* for a catalog workflow).
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ import lagprof  # noqa: E402
 
 INDICES = ("lagprof-rules", "lagprof-rule-streams", "lagprof-results", "lagprof-stream-stats",
            "lagprof-host-lag", "lagprof-runs")
+CATALOG_INDICES = ("rulescope-catalog-rules", "rulescope-catalog-rule-streams", "rulescope-catalog-syncs",
+                   "rulescope-catalog-rule-history")
 
 
 def upsert(c: lagprof.Client, prefix: str, yaml_text: str) -> str:
@@ -74,7 +76,7 @@ def main() -> int:
         if s["status"] == "failed" and s["stepId"] not in seen:
             seen.add(s["stepId"])
             print(f"  FAILED {s['stepId']}: {json.dumps(s.get('error'))[:600]}")
-    for idx in INDICES:
+    for idx in CATALOG_INDICES if "rulescope-catalog" in args.yaml else INDICES:
         code, n = c.es("GET", f"/{idx}/_count", allow=(404,))
         print(f"  {idx:22} {n.get('count') if code == 200 else 'missing'}")
     return 0 if e["status"] == "completed" else 1

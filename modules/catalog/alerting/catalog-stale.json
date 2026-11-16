@@ -1,0 +1,33 @@
+{
+  "_rulescope_notes": [
+    "Created with POST /api/alerting/rule/rulescope-catalog-stale (or rulescope-catalog-stale-<space> per space). Keys starting with _rulescope are removed before sending.",
+    "Fires for each catalog scope that ran in the last 7 days but has no successful sync in the last 3 hours. Report modules stop using a catalog older than 2 hours, so this means their results have stopped too.",
+    "A scope that never synced at all isn't detected; the Catalog health panel shows that."
+  ],
+  "id": "rulescope-catalog-stale",
+  "name": "Rule Catalog: no successful sync in 3 hours",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "schedule": {
+    "interval": "30m"
+  },
+  "tags": [
+    "rulescope",
+    "rulescope-catalog"
+  ],
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM rulescope-catalog-syncs\n| WHERE kind == \"sync\"\n| EVAL ok_recent = CASE(status == \"success\" AND @timestamp >= NOW() - 3 hours, 1, 0)\n| STATS ok = SUM(ok_recent), last_run = MAX(@timestamp), last_success = MAX(CASE(status == \"success\", @timestamp, null)) BY scope = rulescope.scope\n| WHERE ok == 0\n| LIMIT 100"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 7,
+    "timeWindowUnit": "d",
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "size": 100
+  },
+  "actions": []
+}

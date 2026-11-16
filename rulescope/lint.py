@@ -8,7 +8,7 @@ from . import resources
 from .core import FORBIDDEN_SETTING_KEYS, PACK_ROOT, VERSION, WORKFLOW_FILES, ConfigError
 from .report import Reporter
 from .render import MODE_SCOPES, generated_workflows, stale_workflows
-from .resources import LOOKUP_INDEX, load_json, pack_resources, render_workflow
+from .resources import LOOKUP_INDEX, load_json, pack_resources, render_module_workflow, render_workflow
 
 # A bulk body key can name a KEEP column by its last part (lagprof.rule.id -> "id"),
 # or by the end of it ("start" for window_start). These columns may also fill
@@ -114,8 +114,9 @@ def lint(rep: Reporter) -> int:
                 if any(key.endswith(f) or f"{f}." in key for f in FORBIDDEN_SETTING_KEYS) or "lifecycle.name" in key:
                     bad(r.kind, r.name, f"setting {key} is rejected on Serverless")
         is_lookup = (((body.get("template") or {}).get("settings") or {}).get("index") or {}).get("mode") == "lookup"
-        if r.kind == "index_template" and not is_lookup and "lagprof-common" not in body.get("composed_of", []):
-            bad(r.kind, r.name, "does not use the lagprof-common component template")
+        common = "lagprof-common" if r.module == "lag" else "rulescope-common"
+        if r.kind == "index_template" and not is_lookup and common not in body.get("composed_of", []):
+            bad(r.kind, r.name, f"does not use the {common} component template")
         if r.kind == "index_template" and is_lookup and body.get("composed_of"):
             bad(r.kind, r.name, "lookup index must have its own mapping: every mapped field enters the join")
         if r.kind == "index_template" and "data_stream" in body:
@@ -154,6 +155,22 @@ def lint(rep: Reporter) -> int:
             render_workflow(mode, "lint-check", True)
         except ConfigError as err:
             bad("workflow", mode, str(err))
+
+    # Module workflows rendered from templates, in both scopes.
+    for r in pack_resources():
+        if r.kind != "workflow" or r.module == "lag":
+            continue
+        for space in (None, "lint-check"):
+            scope = f"space {space}" if space else "global"
+            try:
+                _, text = render_module_workflow(r, space)
+            except ConfigError as err:
+                bad("workflow", f"{r.name} ({scope})", str(err))
+                continue
+            for msg in bulk_row_problems(text):
+                bad("workflow", f"{r.name} ({scope})", msg)
+            if "[[" in text or "#%" in text:
+                bad("workflow", f"{r.name} ({scope})", "unrendered template markup left in the output")
 
     if not problems:
         rep.line("ok", "lint", "pack", f"v{VERSION}")
