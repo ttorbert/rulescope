@@ -25,7 +25,7 @@ Either way, the raw logs (`logs-*`) aren't divided by space. Rules in every spac
 
 ## Installing the all-spaces version
 
-`scripts/lagprof.py install` does all of this for you (see the [setup guide](../../docs/setup-guide.md)). These are the manual steps, and what the installer does.
+`python3 -m rulescope install` does all of this for you (see the [setup guide](../../docs/setup-guide.md)). These are the manual steps, and what the installer does.
 
 1. Create the workflow role with Security rule read privileges in all spaces (`spaces: ["*"]`). See `elasticsearch/security/lagprof-workflow-role.json`.
 2. Import `lagprof-hourly-all-spaces.yaml` in the Default space.
@@ -34,11 +34,11 @@ Each run fetches up to 10,000 enabled rules per space in one call. Rules after t
 
 ## Installing the per-space version
 
-`lagprof.py install --workflow per-space --space <id> [--shared-stats]` does this for one space. Manually, for each space with detection rules:
+`python3 -m rulescope install --workflow per-space --space <id> [--shared-stats]` does this for one space. Manually, for each space with detection rules:
 
 1. Create a role for that space only.
 2. Import `lagprof-hourly-per-space.yaml` into the space.
-3. Edit the copy (`lagprof.py render-workflow --workflow per-space --space <id>` writes an edited copy to `build/`):
+3. Edit the copy (`python3 -m rulescope render-workflow --workflow per-space --space <id>` writes an edited copy to `build/`):
    - `name`: replace `CHANGEME` with the space ID, so the copies can be told apart.
    - `consts.space_id`: the space ID.
    - `consts.write_shared_stats`: `true` in exactly one copy and `false` in the rest. The Default space is a good choice for the `true` copy.
@@ -64,4 +64,4 @@ Both versions have run successfully on 9.5.6 in the Rancher Desktop lab:
 - **All spaces:** 2 spaces with rules, plus 1 without.
 - **Per space:** three copies, with the shared-stats switch confirmed on and off.
 
-`scripts/lagprof.py install` imports the chosen version through the Workflows API. Use `--no-import-workflow` to get only the YAML in `build/`. Kibana runs a newly imported scheduled workflow once straight away.
+`python3 -m rulescope install` imports the chosen version through the Workflows API. Use `--no-import-workflow` to get only the YAML in `build/`. Kibana runs a newly imported scheduled workflow once straight away.

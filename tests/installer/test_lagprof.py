@@ -1,4 +1,4 @@
-"""Unit tests for scripts/lagprof.py. No cluster needed: a small fake Elasticsearch
+"""Unit tests for the rulescope installer, through the scripts/lagprof.py wrapper. No cluster needed: a small fake Elasticsearch
 and Kibana server answers the calls the installer makes."""
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import lagprof  # noqa: E402
+from rulescope import modules, resources  # noqa: E402
 
 
 # --------------------------------------------------------------------------------------
@@ -306,14 +307,14 @@ class LintTests(unittest.TestCase):
         self.assertEqual(lagprof.lint(rep), 0, rep.stream.getvalue())
 
     def test_lint_catches_lookup_column_clash(self):
-        real = lagprof.lookup_template_fields
+        real = resources.lookup_template_fields
         try:
-            lagprof.lookup_template_fields = lambda: real() | {"stream_p99"}
+            resources.lookup_template_fields = lambda: real() | {"stream_p99"}
             rep = lagprof.Reporter(io.StringIO())
             self.assertEqual(lagprof.lint(rep), 1)
             self.assertIn("stream_p99", rep.stream.getvalue())
         finally:
-            lagprof.lookup_template_fields = real
+            resources.lookup_template_fields = real
 
     def test_prejoin_columns(self):
         q = "FROM x | EVAL a = 1, b == 2 | STATS n = COUNT(*) BY c // d = e\n| LOOKUP JOIN y ON c | EVAL late = 1"
@@ -605,13 +606,13 @@ class InstallTests(FakeServerCase):
 
     def test_changed_file_is_updated_without_version_bump(self):
         lagprof.install(self.client, self.rep, lagprof.InstallOptions())
-        real = lagprof.fingerprint
+        real = resources.fingerprint
         try:
-            lagprof.fingerprint = lambda path, extra="": real(path, extra) + ("x" if path and path.endswith("lagprof-stamp.json") else "")
+            resources.fingerprint = lambda path, extra="": real(path, extra) + ("x" if path and path.endswith("lagprof-stamp.json") else "")
             self.rep.lines.clear()
             lagprof.install(self.client, self.rep, lagprof.InstallOptions())
         finally:
-            lagprof.fingerprint = real
+            resources.fingerprint = real
         self.assertIn(("updated", "pipeline", "lagprof-stamp"), self.statuses())
         self.assertIn(("unchanged", "pipeline", "lagprof-rules-parse"), self.statuses())
 
@@ -654,6 +655,46 @@ class InstallTests(FakeServerCase):
         self.rep.lines.clear()
         lagprof.status(self.client, self.rep)
         self.assertIn(("current", "pipeline", "lagprof-stamp"), self.statuses())
+
+
+class ModuleTests(unittest.TestCase):
+    def test_default_is_lag(self):
+        self.assertEqual(modules.parse_modules(None), ("lag",))
+        self.assertEqual(modules.parse_modules(" lag , "), ("lag",))
+
+    def test_unknown_module_is_refused(self):
+        with self.assertRaises(lagprof.ConfigError):
+            modules.parse_modules("lag,nope")
+
+    def test_requirements_come_first_and_loops_are_refused(self):
+        saved = dict(modules.MODULES)
+        try:
+            modules.MODULES["catalog"] = modules.Module("catalog", "Rule Catalog")
+            modules.MODULES["lag"] = modules.Module("lag", "Ingest Lag Profiler", ("catalog",))
+            self.assertEqual([m.name for m in modules.resolve(["lag"])], ["catalog", "lag"])
+            modules.MODULES["catalog"] = modules.Module("catalog", "Rule Catalog", ("lag",))
+            with self.assertRaises(lagprof.ConfigError):
+                modules.resolve(["lag"])
+        finally:
+            modules.MODULES.clear()
+            modules.MODULES.update(saved)
+
+    def test_lag_module_owns_every_current_resource(self):
+        everything = resources.pack_resources()
+        self.assertEqual(everything, resources.pack_resources(modules=["lag"]))
+        self.assertTrue(everything)
+        self.assertEqual({r.module for r in everything}, {"lag"})
+
+    def test_cli_rejects_unknown_module(self):
+        err = io.StringIO()
+        old = sys.stderr
+        try:
+            sys.stderr = err
+            code = lagprof.main(["status", "--target-file", "targets/docker.env", "--modules", "nope"])
+        finally:
+            sys.stderr = old
+        self.assertEqual(code, 2)
+        self.assertIn("unknown module", err.getvalue())
 
 
 if __name__ == "__main__":

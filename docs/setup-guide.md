@@ -99,19 +99,19 @@ Then set the variables in the terminal before running the installer:
 ```bash
 export LAGPROF_ADMIN_KEY='<encoded admin API key>'
 export LAGPROF_OWNER_KEY='<encoded workflow API key>'
-python3 scripts/lagprof.py check --target-file targets/prod.env
+python3 -m rulescope check --target-file targets/prod.env
 ```
 
 **Option B: set the setting itself as a variable.** Any setting in the table above can be set directly as an environment variable, and it **overrides** the target file:
 
 ```bash
 export ES_API_KEY='<encoded admin API key>'
-python3 scripts/lagprof.py install --target-file targets/prod.env
+python3 -m rulescope install --target-file targets/prod.env
 ```
 
 **Things to know:**
 - **Variables last only for the current terminal session.** `export` sets them until you close the terminal.
-  - To set one for a single command only, put it in front: `ES_PASSWORD='…' python3 scripts/lagprof.py check --target-file targets/prod.env`
+  - To set one for a single command only, put it in front: `ES_PASSWORD='…' python3 -m rulescope check --target-file targets/prod.env`
   - To keep them across sessions, add the `export` lines to your shell profile (`~/.zshrc` on macOS, `~/.bashrc` on most Linux), or load them from a password manager's command-line tool.
 - **Your shell history records what you type.** In zsh and bash, starting a command with a space usually keeps it out of the history (zsh needs `setopt HIST_IGNORE_SPACE`). Or read the value without echoing it: `read -rs LAGPROF_ADMIN_KEY && export LAGPROF_ADMIN_KEY`.
 - **To check a variable is set without printing it:** `[ -n "$LAGPROF_ADMIN_KEY" ] && echo set || echo missing`.
@@ -119,7 +119,7 @@ python3 scripts/lagprof.py install --target-file targets/prod.env
 ## 4. Check the deployment
 
 ```bash
-python3 scripts/lagprof.py check --target-file targets/prod.env
+python3 -m rulescope check --target-file targets/prod.env
 ```
 
 Each line reports `ok`, `WARN` or `BLOCKED`:
@@ -153,14 +153,14 @@ Detection rules belong to a Kibana space, and the profiler comes in two versions
 **All spaces:**
 
 ```bash
-python3 scripts/lagprof.py install --target-file targets/prod.env
+python3 -m rulescope install --target-file targets/prod.env
 ```
 
 **Per space:** run this once for each space. Add `--shared-stats` to exactly one copy:
 
 ```bash
-python3 scripts/lagprof.py install --target-file targets/prod.env --workflow per-space --space soc --shared-stats
-python3 scripts/lagprof.py install --target-file targets/prod.env --workflow per-space --space team-b
+python3 -m rulescope install --target-file targets/prod.env --workflow per-space --space soc --shared-stats
+python3 -m rulescope install --target-file targets/prod.env --workflow per-space --space team-b
 ```
 
 Each per-space copy gets its own role (`lagprof-workflow-<space>`), its own dashboard (*Ingest Lag Profiler (soc)*), and its own two alert rules, which cover only that space's rules and workflow. Install one version, not both: the installer refuses a per-space copy while the all-spaces workflow is installed, and the other way round. To switch, uninstall the current version first (history is kept).
@@ -212,7 +212,7 @@ To limit them to the `lagprof-workflow` role. In per-space mode, do this for eac
 
    ```bash
    echo 'LAGPROF_WORKFLOW_API_KEY=<encoded key>' >> targets/prod.env
-   python3 scripts/lagprof.py install --target-file targets/prod.env
+   python3 -m rulescope install --target-file targets/prod.env
    ```
 
    The workflow line should now end with `saved by lagprof-runner`.
@@ -224,7 +224,7 @@ To limit them to the `lagprof-workflow` role. In per-space mode, do this for eac
 
 ## 8. Confirm it's working
 
-1. **Status:** `python3 scripts/lagprof.py status --target-file targets/prod.env` should list every resource as `current` or `present`.
+1. **Status:** `python3 -m rulescope status --target-file targets/prod.env` should list every resource as `current` or `present`.
 2. **Workflow:** in Kibana, open **Workflows › lagprof-hourly-all-spaces › Executions**. The first run should be *completed*, usually within a minute, or a few minutes with thousands of rules.
 3. **Dashboard:** open **Dashboards › Ingest Lag Profiler**.
    - *Profiler health* shows the run. On a new cluster with no logs yet, its status is **no_data** with the note *No data in logs-\* yet*. That's expected: it isn't a failure.
@@ -252,8 +252,8 @@ Pull the new version and run `install` again with the same options. Changed reso
 ## Uninstalling
 
 ```bash
-python3 scripts/lagprof.py uninstall --target-file targets/prod.env                 # keep history
-python3 scripts/lagprof.py uninstall --target-file targets/prod.env --delete-data   # remove history too
+python3 -m rulescope uninstall --target-file targets/prod.env                 # keep history
+python3 -m rulescope uninstall --target-file targets/prod.env --delete-data   # remove history too
 ```
 
 In per-space mode, add `--space <id>` for each space. The `lagprof-runner` user and its API key aren't touched; delete them yourself if you no longer need them.

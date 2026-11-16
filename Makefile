@@ -39,7 +39,7 @@ test: lint unit
 	$(PYTHON) tests/model/simulate_rule_schedule.py --trials 20000
 
 lint:
-	$(PYTHON) scripts/lagprof.py lint
+	$(PYTHON) -m rulescope lint
 
 unit:
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -t .
@@ -56,12 +56,12 @@ lab-prep:
 lab-up: lab-prep
 	$(COMPOSE) up -d
 	$(LAB_DIR)/wait-ready.sh
-	$(WITH_LAB_ENV) $(PYTHON) scripts/lagprof.py install --target-file targets/docker.env $(INSTALL_ARGS)
+	$(WITH_LAB_ENV) $(PYTHON) -m rulescope install --target-file targets/docker.env $(INSTALL_ARGS)
 	@echo "Kibana: http://localhost:5601  (user elastic, password in $(LAB_DIR)/.env)"
 
 lab-owner:
 	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/lab-owner.py
-	$(WITH_LAB_ENV) LAGPROF_WORKFLOW_API_KEY=$$(cat build/lab-owner-key) $(PYTHON) scripts/lagprof.py install --target-file targets/docker.env $(INSTALL_ARGS)
+	$(WITH_LAB_ENV) LAGPROF_WORKFLOW_API_KEY=$$(cat build/lab-owner-key) $(PYTHON) -m rulescope install --target-file targets/docker.env $(INSTALL_ARGS)
 
 lab-down:
 	$(COMPOSE) down
@@ -79,7 +79,7 @@ lab-traffic:
 # ---- any target ---------------------------------------------------------------------
 
 check install status uninstall:
-	$(WITH_LAB_ENV) $(PYTHON) scripts/lagprof.py $@ --target-file $(TARGET) $(if $(filter install,$@),$(INSTALL_ARGS))
+	$(WITH_LAB_ENV) $(PYTHON) -m rulescope $@ --target-file $(TARGET) $(if $(filter install,$@),$(INSTALL_ARGS))
 
 validate:
 	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/validate.py setup
@@ -98,5 +98,5 @@ test-pipelines:
 package:
 	@mkdir -p dist
 	zip -qr dist/ingest-lag-profiler-$$(cat VERSION).zip VERSION README.md elasticsearch esql kibana \
-	    scripts/lagprof.py targets/*.example docs
+	    rulescope scripts/lagprof.py targets/*.example docs
 	@echo "dist/ingest-lag-profiler-$$(cat VERSION).zip"

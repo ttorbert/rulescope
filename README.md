@@ -52,8 +52,8 @@ The dashboard's *Rule coverage* panel shows which group each rule is in.
 2. Check the target, then install:
 
    ```bash
-   python3 scripts/lagprof.py check   --target-file targets/prod.env
-   python3 scripts/lagprof.py install --target-file targets/prod.env
+   python3 -m rulescope check   --target-file targets/prod.env
+   python3 -m rulescope install --target-file targets/prod.env
    ```
 
    This installs the index templates, ingest pipelines, workflow role, workflow and alert rules. The workflow starts its first run straight away, then runs hourly.
@@ -61,7 +61,7 @@ The dashboard's *Rule coverage* panel shows which group each rule is in.
 3. Choose a workflow version. **All spaces** is the default. See [kibana/workflows/README.md](kibana/workflows/README.md) for when to use **per space** instead:
 
    ```bash
-   python3 scripts/lagprof.py install --target-file targets/prod.env \
+   python3 -m rulescope install --target-file targets/prod.env \
        --workflow per-space --space soc --shared-stats
    ```
 
@@ -100,7 +100,7 @@ make lab-down      # stop (keeps data); make lab-reset deletes everything
 ## Development
 
 ```bash
-make test             # lint, 52 installer unit tests, quick formula simulation (no cluster needed)
+make test             # lint, 57 installer unit tests, quick formula simulation (no cluster needed)
 make simulate         # full formula simulation
 make test-pipelines   # ingest pipeline fixtures against the lab
 make dashboard        # run the dashboard queries against the lab, then rebuild its JSON
@@ -113,7 +113,7 @@ make package          # zip the pack into dist/
 | [esql/](esql/) | The three hourly queries; `lint` checks they match the workflows |
 | [kibana/workflows/](kibana/workflows/) | The all-spaces and per-space workflows |
 | [kibana/alerting/](kibana/alerting/) | Miss-rate and stale-profiler alert rules |
-| [scripts/lagprof.py](scripts/lagprof.py) | Installer for Docker, self-managed, Cloud and Serverless |
+| [rulescope/](rulescope/) | Installer package for Docker, self-managed, Cloud and Serverless (`python3 -m rulescope`). [scripts/lagprof.py](scripts/lagprof.py) is a wrapper kept for the lab scripts. |
 | [scripts/lab/](scripts/lab/) | Rancher Desktop lab, traffic generator, validation |
 | [kibana/dashboards/](kibana/dashboards/) | Dashboard; `build.py` writes the JSON from readable ES\|QL queries |
 | [tests/](tests/) | Formula simulation, installer unit tests, pipeline fixtures; `tests/lab/` holds spikes and helpers run by hand |

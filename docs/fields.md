@@ -2,7 +2,7 @@
 
 Every `lagprof-*` index except the lookup index shares one component template, [lagprof-common](../elasticsearch/component-templates/lagprof-common.json), with `dynamic: false`. Fields not listed here are kept in `_source` but not indexed.
 
-`lagprof-rule-streams` has its own [small mapping](../elasticsearch/index-templates/lagprof-rule-streams.json). `LOOKUP JOIN` adds every field the lookup index maps, and a lookup field replaces any query column with the same name. So it maps only what pair documents contain. `lagprof.py lint` fails if that mapping shares a name with a column the miss-rate query creates before its join.
+`lagprof-rule-streams` has its own [small mapping](../elasticsearch/index-templates/lagprof-rule-streams.json). `LOOKUP JOIN` adds every field the lookup index maps, and a lookup field replaces any query column with the same name. So it maps only what pair documents contain. `python3 -m rulescope lint` fails if that mapping shares a name with a column the miss-rate query creates before its join.
 
 **Naming:**
 - Profiler fields are under `lagprof.`.

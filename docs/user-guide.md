@@ -168,7 +168,7 @@ The setup guide covers [sending alerts](setup-guide.md#9-send-alerts-somewhere) 
    - Its owner's API key expired or was deleted. Recreate it as in [setup step 7](setup-guide.md#7-give-the-workflow-its-own-limited-identity).
    - A failed write, such as `rule_bulk_write_failed…`. Run `install` again.
    - A license change.
-3. `python3 scripts/lagprof.py status --target-file <your target>` shows whether anything has drifted from the pack.
+3. `python3 -m rulescope status --target-file <your target>` shows whether anything has drifted from the pack.
 
 ---
 

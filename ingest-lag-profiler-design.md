@@ -103,7 +103,7 @@ The workflow writes all of them. Retention uses data stream lifecycle, not ILM, 
 `lagprof-rule-streams` has its **own small mapping**; every other index uses the shared `lagprof-common` component template. `LOOKUP JOIN` adds every field the lookup index maps, and a lookup field replaces any query column with the same name. Sharing the results mapping caused exactly that bug in the lab: empty result fields replaced the query's percentile columns.
 
 Two safeguards follow from this:
-- `lagprof.py lint` fails if the lookup mapping shares a name with a column the miss-rate query creates before its join.
+- `python3 -m rulescope lint` fails if the lookup mapping shares a name with a column the miss-rate query creates before its join.
 - The installer recreates the lookup index when its mapping is out of date. Every run rebuilds it, so nothing lasting is lost.
 
 ### Naming
@@ -220,7 +220,7 @@ Three ES|QL queries run each hour. They measure the **last full clock hour**, so
 
 The query counts events per data stream and lag second first, then joins rules to those counts. Joining raw events would copy every event once per rule. Every event with the same lag has the same chance of a miss, so the estimate is exact. Each event searched by three rules still counts once for each. Lags over 2 hours are grouped by whole minute to keep the row count down. That only matters for rules whose look-back is over 2 hours, where it can shift a miss chance by up to 60 seconds ÷ interval. Percentiles are computed once per stream on the raw events with `INLINE STATS`. Their columns (`stream_p50` and so on) are named so they don't collide with fields mapped in the lookup index, which would replace them in the join. Rows with no matching rule are dropped. Rules that search on `event.ingested` are left out here, because ingest lag doesn't affect them. The per-space version adds `lagprof.space.id == ?space_id` to the `WHERE` after the join.
 
-[esql/miss-rate.esql](esql/miss-rate.esql) is the reference copy; `lagprof.py lint` checks that it matches both workflows.
+[esql/miss-rate.esql](esql/miss-rate.esql) is the reference copy; `python3 -m rulescope lint` checks that it matches both workflows.
 
 ```sql
 FROM logs-*
@@ -382,7 +382,7 @@ The lab's target type is called `docker` because it runs in containers. Rancher 
 
 ### Installer
 
-`scripts/lagprof.py` is a command-line tool that uses only the Python standard library, so there's nothing to install. Bash with `curl` and `jq` would struggle with the Kibana file imports and the differences between targets.
+The installer, the `rulescope` package (`python3 -m rulescope`), is a command-line tool that uses only the Python standard library, so there's nothing to install. Bash with `curl` and `jq` would struggle with the Kibana file imports and the differences between targets.
 
 | Command | Does |
 | --- | --- |
@@ -634,7 +634,7 @@ None are open.
 | Lag measurement | [esql/stream-stats.esql](esql/stream-stats.esql), [esql/host-lag.esql](esql/host-lag.esql) | Same: copies of queries in the workflows |
 | Rule parsing | [elasticsearch/ingest-pipelines/lagprof-rules-parse.json](elasticsearch/ingest-pipelines/lagprof-rules-parse.json) | A Painless script; decides `supported` |
 | Mappings | [elasticsearch/component-templates/lagprof-common.json](elasticsearch/component-templates/lagprof-common.json), [lagprof-rule-streams.json](elasticsearch/index-templates/lagprof-rule-streams.json) | `dynamic: false`; the lookup index has its own mapping |
-| Installer | [scripts/lagprof.py](scripts/lagprof.py) | Standard library only. `pack_resources()` lists everything it manages, in install order. |
+| Installer | [rulescope/](rulescope/) | Standard library only. `resources.pack_resources()` lists everything it manages, in install order; `modules.py` lists the modules. [scripts/lagprof.py](scripts/lagprof.py) is a wrapper for the lab scripts. |
 | Dashboard | [kibana/dashboards/build.py](kibana/dashboards/build.py) | Generates `lagprof-overview.json`; don't hand-edit the JSON |
 | Alerts | [kibana/alerting/](kibana/alerting/) | `_lagprof_notes` keys are stripped before sending |
 | Formula check | [tests/model/simulate_rule_schedule.py](tests/model/simulate_rule_schedule.py) | Monte Carlo; doesn't use the formula |
@@ -643,7 +643,7 @@ None are open.
 
 ### Invariants a change can break
 
-- **Query copies must match.** The queries in `esql/` are pasted into both workflows. `lagprof.py lint` compares them with whitespace normalized; the per-space miss-rate query differs only by its `?space_id` filter.
+- **Query copies must match.** The queries in `esql/` are pasted into both workflows. `python3 -m rulescope lint` compares them with whitespace normalized; the per-space miss-rate query differs only by its `?space_id` filter.
 - **Row positions follow `KEEP`.** The workflows' bulk bodies read result rows by position (`row[0]` … `row[16]`). Changing a query's `KEEP` order or columns means changing the matching `save_*` step in both workflows. Lint doesn't check this.
 - **Stale cleanup trusts `@timestamp`.** It deletes rule and pair documents stamped before the run started. Anything written to `lagprof-rules` or `lagprof-rule-streams` must be stamped at ingest (`lagprof-rules-parse`, `lagprof-streams-parse` or `lagprof-stamp`), or the next run deletes it. Reads and counts in a run select by `@timestamp >= run start`, not by run ID.
 - **Document IDs make reruns safe.** Result IDs are built from the window start, rule ID and stream (or stream and host). Changing them would let a rerun duplicate an hour.
@@ -656,7 +656,7 @@ None are open.
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `make test` | `lint`, 52 installer unit tests against a fake cluster, a 20,000-trial formula simulation | Nothing |
+| `make test` | `lint`, 57 installer unit tests against a fake cluster, a 20,000-trial formula simulation | Nothing |
 | `make simulate` | The full 100,000-trial simulation, as Markdown | Nothing |
 | `make test-pipelines` | 19 `_simulate` fixture cases for the three pipelines | The lab |
 | `make dashboard` | Every dashboard query, then rebuilds the JSON | The lab |
