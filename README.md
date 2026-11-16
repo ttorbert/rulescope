@@ -2,6 +2,8 @@
 
 Estimates how many events each Elastic Security detection rule misses because logs arrive late. It runs entirely inside Elastic: an hourly workflow measures the lag between when events happened (`@timestamp`) and when they arrived (`event.ingested`). It then estimates each rule's miss rate from its schedule and look-back, and keeps the history in ordinary indices with a dashboard and alerts.
 
+> **Becoming rulescope.** This project is being restructured into **rulescope**: a shared rule catalog plus separate report modules, with the Ingest Lag Profiler as the first module. See [rulescope-design.md](rulescope-design.md). Until the restructure lands, everything below describes the lag-only pack as it is today.
+
 > **Status: in development (v0.1.0-dev).** Everything runs end to end on 9.5.6 in the lab: workflows, queries, pipelines, installer, dashboard and alerts. **The lab validation against real rule alerts passed:** the profiler estimated 55.8% against an observed 55.6% ([results](docs/validation-results.md)). Installer tests on Elastic Cloud and Serverless are still to do. See [build-plan.md](build-plan.md).
 
 **Results are estimates, not proof.** `est_missed` is the expected number of events, in the data streams a rule searches, that fall outside the rule's window. It isn't a count of missed alerts. See [docs/miss-model.md](docs/miss-model.md).
@@ -30,6 +32,7 @@ The dashboard's *Rule coverage* panel shows which group each rule is in.
 | [Validation results](docs/validation-results.md) | How the estimates were tested against real rules |
 | [Miss model](docs/miss-model.md) | The formula, its simulation check, and what it leaves out |
 | [Field reference](docs/fields.md) | Every field in the `lagprof-*` indices |
+| [rulescope design](rulescope-design.md) | The planned restructure: rule catalog, modules, space scopes, cross-cluster planning |
 | [Design](ingest-lag-profiler-design.md) | How it works, as built, with [notes for reviewers](ingest-lag-profiler-design.md#notes-for-reviewers) and [known issues](ingest-lag-profiler-design.md#known-issues) |
 | [Build plan](build-plan.md) | Milestones, what's done, and what's next |
 

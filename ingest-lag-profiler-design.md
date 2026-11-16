@@ -2,6 +2,8 @@
 
 Nov 13, 2026 · @tammy · revised Nov 13, 2026 with the build plan review · updated Nov 14, 2026 to match the code at v0.1.0-dev
 
+> **Partly superseded.** [rulescope-design.md](rulescope-design.md) restructures this pack into a rule catalog plus report modules. Once it's built, rule fetching, pattern resolution, stale cleanup, the installer, workflow versions, naming and roles follow that document. The miss model, the lag queries, the dashboard panels and the validation here stay in force for the lag module.
+
 This document describes the pack **as built**. Where the build changed the original plan, the text follows the code, and [build-plan.md](build-plan.md) records why. Reviewers should start with [Notes for reviewers](#notes-for-reviewers) near the end.
 
 The Ingest Lag Profiler estimates how many events each Elastic Security detection rule misses because logs arrive late. It runs entirely inside Elastic. It targets **Elastic Stack 9.5.6 with an Enterprise license**, and the installer can also load it into Elastic Cloud and Serverless projects. It ships as a pack: a workflow (in two versions), index templates, ingest pipelines, queries, a dashboard and alert rules. One installer script loads all of it, and nothing keeps running outside Elastic.

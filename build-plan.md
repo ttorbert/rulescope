@@ -6,6 +6,12 @@ This plan turns the design into a shippable pack. It has three parts: changes th
 
 **How to read it now.** The status sections below are current. Parts 1 to 3 are the plan as written before the build. Their checkboxes are ticked to show what was done, and *As built* notes mark where the code differs. For how things work today, the [design doc](ingest-lag-profiler-design.md) follows the code.
 
+## Next: the rulescope restructure (Nov 16, 2026)
+
+The lag-only pack won't be released on its own. It's being restructured into rulescope, a rule catalog plus report modules, and the first public release will be the catalog and the lag module together (`v0.2.0`). The plan, steps and estimates are in [rulescope-design.md](rulescope-design.md#plan). Milestone 5's Cloud and Serverless smoke tests move to step 6 of that plan, and run against the new structure.
+
+The lag-only code is tagged `v0.1.0-lab` as a checkpoint.
+
 ## Status at a glance (Nov 14, 2026)
 
 | Milestone | Status |
@@ -474,3 +480,4 @@ The full validation runs in the Rancher Desktop lab. Keep the machine awake for 
 - **Free edition:** out of scope.
 - **Lab:** Rancher Desktop (dockerd engine, VM raised to 8 GB and 4 CPUs). Elastic Cloud and Serverless are only used for short installer smoke tests in Milestone 5.
 - **Install targets:** one installer, `scripts/lagprof.py`, loads the same resource files into the Rancher Desktop lab, self-managed, Elastic Cloud and Serverless.
+- **Project structure (Nov 15, 2026):** one repository named rulescope, a shared rule catalog plus report modules. The first public release comes after the restructure. Every module supports global and per-space scopes. Cross-cluster search is designed now and built later. See [rulescope-design.md](rulescope-design.md#decisions-recorded).
