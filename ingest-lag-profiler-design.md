@@ -629,7 +629,7 @@ None are open.
 
 | Concern | Where | Notes |
 | --- | --- | --- |
-| Orchestration | [kibana/workflows/](kibana/workflows/) | The two YAML files are near-copies. A change to one usually belongs in both. `diff` them to review. |
+| Orchestration | [kibana/workflows/](kibana/workflows/) | Both YAML files are rendered from `lagprof-hourly.yaml.tmpl`. Edit the template, then run `make render`; `lint` fails if the files drift. `lint` also checks each bulk body's `row[N]` positions against its query's `KEEP`. |
 | Miss math | [esql/miss-rate.esql](esql/miss-rate.esql) | Reference copy of the query inside both workflows |
 | Lag measurement | [esql/stream-stats.esql](esql/stream-stats.esql), [esql/host-lag.esql](esql/host-lag.esql) | Same: copies of queries in the workflows |
 | Rule parsing | [elasticsearch/ingest-pipelines/lagprof-rules-parse.json](elasticsearch/ingest-pipelines/lagprof-rules-parse.json) | A Painless script; decides `supported` |

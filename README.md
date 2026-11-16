@@ -100,8 +100,9 @@ make lab-down      # stop (keeps data); make lab-reset deletes everything
 ## Development
 
 ```bash
-make test             # lint, 57 installer unit tests, quick formula simulation (no cluster needed)
+make test             # lint, 72 unit tests, quick formula simulation (no cluster needed)
 make simulate         # full formula simulation
+make render           # regenerate the workflow YAML from its template
 make test-pipelines   # ingest pipeline fixtures against the lab
 make dashboard        # run the dashboard queries against the lab, then rebuild its JSON
 make package          # zip the pack into dist/
@@ -111,12 +112,12 @@ make package          # zip the pack into dist/
 | --- | --- |
 | [elasticsearch/](elasticsearch/) | Component and index templates, ingest pipelines, workflow role |
 | [esql/](esql/) | The three hourly queries; `lint` checks they match the workflows |
-| [kibana/workflows/](kibana/workflows/) | The all-spaces and per-space workflows |
+| [kibana/workflows/](kibana/workflows/) | The workflow template, and the all-spaces and per-space workflows rendered from it |
 | [kibana/alerting/](kibana/alerting/) | Miss-rate and stale-profiler alert rules |
 | [rulescope/](rulescope/) | Installer package for Docker, self-managed, Cloud and Serverless (`python3 -m rulescope`). [scripts/lagprof.py](scripts/lagprof.py) is a wrapper kept for the lab scripts. |
 | [scripts/lab/](scripts/lab/) | Rancher Desktop lab, traffic generator, validation |
 | [kibana/dashboards/](kibana/dashboards/) | Dashboard; `build.py` writes the JSON from readable ES\|QL queries |
-| [tests/](tests/) | Formula simulation, installer unit tests, pipeline fixtures; `tests/lab/` holds spikes and helpers run by hand |
+| [tests/](tests/) | Formula simulation, installer and render unit tests, pipeline fixtures; `tests/lab/` holds spikes and helpers run by hand |
 | [docs/](docs/) | Value, setup and user guides, miss model, field reference, validation results |
 
 Design: [ingest-lag-profiler-design.md](ingest-lag-profiler-design.md). Reviewing the code? Start with its [notes for reviewers](ingest-lag-profiler-design.md#notes-for-reviewers): the code map and the invariants a change can break. Build plan: [build-plan.md](build-plan.md).

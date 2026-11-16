@@ -284,7 +284,7 @@ The lag module reads rule settings that are at most one sync old, which is up to
 
 With four modules and two scopes, hand-kept YAML copies would mean up to eight near-identical files. Instead:
 
-- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`.
+- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`. (Built in step 2: the lag template is `kibana/workflows/lagprof-hourly.yaml.tmpl` until the module folders arrive in step 4. Its directives are line-based `#%` comments, so they never collide with Liquid; see `rulescope/render.py`.)
 - `rulescope render` produces the `global` and `space:<id>` versions, using Python's standard library only, as the installer does today.
 - `lint` renders every version and checks:
   - the ES|QL queries match `modules/<module>/esql/`;

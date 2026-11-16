@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .client import Client
-from .core import PACK_ROOT, ROLE_NAME, SPACE_ID_RE, VERSION, WORKFLOW_FILES, ConfigError, space_prefix
+from .core import PACK_ROOT, ROLE_NAME, SPACE_ID_RE, VERSION, WORKFLOW_FILES, WORKFLOW_TEMPLATE, ConfigError, space_prefix
 from .modules import MODULES, resolve
+from .render import MODE_SCOPES, render_file
 
 
 def load_json(rel: str | Path) -> dict:
@@ -61,7 +62,7 @@ def render_workflow(mode: str, space: str | None = None, shared_stats: bool = Fa
     """Return (output file name, YAML text) with per-space settings filled in."""
     if mode not in WORKFLOW_FILES:
         raise ConfigError(f"--workflow must be one of {', '.join(WORKFLOW_FILES)}")
-    text = (PACK_ROOT / WORKFLOW_FILES[mode]).read_text()
+    text = render_file(WORKFLOW_TEMPLATE, MODE_SCOPES[mode])
     if mode == "all-spaces":
         return "lagprof-hourly-all-spaces.yaml", text
     if not space or not SPACE_ID_RE.match(space):

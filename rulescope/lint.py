@@ -7,7 +7,13 @@ import re
 from . import resources
 from .core import FORBIDDEN_SETTING_KEYS, PACK_ROOT, VERSION, WORKFLOW_FILES, ConfigError
 from .report import Reporter
+from .render import MODE_SCOPES, generated_workflows, stale_workflows
 from .resources import LOOKUP_INDEX, load_json, pack_resources, render_workflow
+
+# A bulk body key can name a KEEP column by its last part (lagprof.rule.id -> "id"),
+# or by the end of it ("start" for window_start). These columns may also fill
+# "@timestamp".
+TIMESTAMP_COLUMNS = {"window_start"}
 
 
 def prejoin_columns(query: str) -> set[str]:
@@ -23,6 +29,63 @@ def _walk_keys(obj, prefix=""):
             path = f"{prefix}.{k}" if prefix else k
             yield path
             yield from _walk_keys(v, path)
+
+
+def keep_columns(query: str) -> list[str] | None:
+    """The columns of a query's last KEEP, in order; None if it has no KEEP."""
+    lines = query.splitlines()
+    cols = None
+    for i, line in enumerate(lines):
+        m = re.match(r"\s*\|\s*KEEP\s+(.*)$", line)
+        if not m:
+            continue
+        text = m.group(1)
+        for nxt in lines[i + 1:]:
+            s = nxt.strip()
+            if not s or s.startswith("|") or s.startswith("//") or re.match(r"[\w-]+:", s):
+                break
+            text += " " + s
+        cols = [c.strip() for c in text.split(",") if c.strip()]
+    return cols
+
+
+def _steps(text: str) -> dict[str, str]:
+    """Workflow step name -> the YAML from its '- name:' line to the next one."""
+    parts = re.split(r"(?m)^\s*- name:\s*(\S+)\s*$", text)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+
+
+def bulk_row_problems(text: str) -> list[str]:
+    """Check each bulk body that loops over a query's rows against the query's KEEP.
+
+    A row is a list, so row[3] is the fourth KEEP column. Reordering KEEP without the
+    body silently writes values into the wrong fields; this catches that."""
+    steps = _steps(text)
+    problems = []
+    loops = re.finditer(r"\{%\s*for\s+(\w+)\s+in\s+steps\.(\w+)\.output\.values\s*%\}(.*?)\{%\s*endfor\s*%\}",
+                        text, re.S)
+    for m in loops:
+        var, step, body = m.groups()
+        q = re.search(r"query:\s*\|\n(.*)", steps.get(step, ""), re.S)
+        cols = keep_columns(q.group(1)) if q else None
+        if not cols:
+            problems.append(f"rows of {step} are written, but {step} has no query ending in KEEP")
+            continue
+        used = {int(i) for i in re.findall(rf"\b{var}\[(\d+)\]", body)}
+        for i in sorted(used):
+            if i >= len(cols):
+                problems.append(f"{var}[{i}] from {step}: the query keeps only {len(cols)} columns")
+        for i in sorted(set(range(len(cols))) - used):
+            problems.append(f"{step} column {cols[i]} ({var}[{i}]) is never written")
+        for key, i in re.findall(rf'"([\w@]+)"\s*:\s*\{{\{{\s*{var}\[(\d+)\]', body):
+            i = int(i)
+            if i >= len(cols):
+                continue
+            last = cols[i].rsplit(".", 1)[-1]
+            ok = key == last or last.endswith("_" + key) or (key == "@timestamp" and last in TIMESTAMP_COLUMNS)
+            if not ok:
+                problems.append(f'"{key}" is written from {var}[{i}], which is {step} column {cols[i]}')
+    return problems
 
 
 def normalize_ws(text: str) -> str:
@@ -65,8 +128,17 @@ def lint(rep: Reporter) -> int:
         bad("esql", "miss-rate.esql", f"columns created before the join are also mapped in {LOOKUP_INDEX} "
             f"and would be replaced: {', '.join(sorted(clash))}")
 
+    # The checked-in workflow files are rendered from the template.
+    for path in stale_workflows():
+        bad("workflow", path, "differs from the template; run python3 -m rulescope render")
+
+    rendered = {mode: text for mode, text in zip(WORKFLOW_FILES, generated_workflows().values())}
+    for mode, text in rendered.items():
+        for msg in bulk_row_problems(text):
+            bad("workflow", f"{MODE_SCOPES[mode]} scope", msg)
+
     # The esql/ files are the readable copies of the queries inside the workflows.
-    workflows = {m: normalize_ws((PACK_ROOT / p).read_text()) for m, p in WORKFLOW_FILES.items()}
+    workflows = {m: normalize_ws(t) for m, t in rendered.items()}
     for qfile in sorted((PACK_ROOT / "esql").glob("*.esql")):
         q = normalize_ws(qfile.read_text())
         for mode, wf in workflows.items():

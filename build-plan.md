@@ -12,6 +12,12 @@ The lag-only pack won't be released on its own. It's being restructured into rul
 
 The lag-only code is tagged `v0.1.0-lab` as a checkpoint.
 
+| Step | Status |
+| --- | --- |
+| 1. Installer package and module support | Done: `python3 -m rulescope`, no behavior change |
+| 2. Workflow templates and rendering | Done: both lag workflows are rendered from one template, byte for byte; lint checks bulk row positions against each query's `KEEP` |
+| 3. Catalog module | Next |
+
 ## Status at a glance (Nov 14, 2026)
 
 | Milestone | Status |

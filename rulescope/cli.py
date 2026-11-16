@@ -13,6 +13,7 @@ from .install import InstallOptions, install, status, uninstall
 from .lint import lint
 from .modules import DEFAULT_MODULES, MODULES, parse_modules, resolve
 from .report import Reporter
+from . import render
 from .resources import render_workflow
 
 
@@ -61,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("lint", help="offline checks of the pack files")
 
+    p = sub.add_parser("render", help="regenerate kibana/workflows/*.yaml from the workflow template")
+    p.add_argument("--check", action="store_true", help="only report files that are out of date")
+
     p = sub.add_parser("render-workflow", help="write a ready-to-import workflow YAML to build/")
     wf(p)
     return ap
@@ -72,6 +76,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "lint":
             return lint(rep)
+        if args.cmd == "render":
+            stale = render.stale_workflows() if args.check else render.write_workflows()
+            for path in stale:
+                rep.line("stale" if args.check else "written", "workflow", path)
+            if not stale:
+                rep.line("ok", "render", "workflows", "match the template")
+            return 1 if (args.check and stale) else 0
         if args.cmd == "render-workflow":
             fname, text = render_workflow(args.workflow, args.space, args.shared_stats)
             out = PACK_ROOT / "build" / fname

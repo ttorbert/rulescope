@@ -1,5 +1,7 @@
 # Choosing a workflow
 
+> **Editing the workflows:** both files are generated from [lagprof-hourly.yaml.tmpl](lagprof-hourly.yaml.tmpl). Edit the template, then run `python3 -m rulescope render` (or `make render`). `lint` fails when the files no longer match the template, and when a bulk body's `row[N]` doesn't line up with its query's `KEEP` columns. Import the `.yaml` files, never the template.
+
 Detection rules belong to a Kibana space, and a rule search only returns rules from one space. The profiler comes in two versions, which differ in how they deal with that. Install **one** of them, not both.
 
 | | All spaces | Per space |

@@ -10,6 +10,7 @@
 #   make validate [RUN=name]        lab validation against real rule alerts (~105 min)
 #   make dashboard                  check the dashboard queries and rebuild its JSON
 #   make simulate                   full formula simulation (100k trials per point)
+#   make render                     regenerate kibana/workflows/*.yaml from the workflow template
 
 SHELL      := /bin/bash
 PYTHON     ?= python3
@@ -27,11 +28,11 @@ RUN        ?= $(shell date +%Y%m%d-%H%M)
 # Load lab passwords so targets/docker.env can use ${ELASTIC_PASSWORD}.
 WITH_LAB_ENV := set -a; [ -f $(LAB_DIR)/.env ] && . $(LAB_DIR)/.env; set +a;
 
-.PHONY: help test lint unit simulate lab-prep lab-up lab-owner lab-down lab-reset lab-logs lab-traffic \
+.PHONY: help test lint unit simulate render lab-prep lab-up lab-owner lab-down lab-reset lab-logs lab-traffic \
         check install status uninstall test-pipelines validate dashboard package
 
 help:
-	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,13p' Makefile | sed 's/^# \{0,1\}//'
 
 # ---- offline -------------------------------------------------------------------------
 
@@ -43,6 +44,9 @@ lint:
 
 unit:
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -t .
+
+render:
+	$(PYTHON) -m rulescope render
 
 simulate:
 	$(PYTHON) tests/model/simulate_rule_schedule.py --markdown

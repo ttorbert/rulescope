@@ -28,6 +28,9 @@ SERVERLESS_API_VERSION = "2023-10-31"
 FORBIDDEN_SETTING_KEYS = ("number_of_shards", "number_of_replicas", "lifecycle.name",
                           "lifecycle.rollover_alias", "routing.allocation")
 
+# The lag workflow is written once as a template (see render.py). WORKFLOW_FILES are
+# its rendered copies, kept in the repo for manual imports; lint checks they match.
+WORKFLOW_TEMPLATE = "kibana/workflows/lagprof-hourly.yaml.tmpl"
 WORKFLOW_FILES = {
     "all-spaces": "kibana/workflows/lagprof-hourly-all-spaces.yaml",
     "per-space": "kibana/workflows/lagprof-hourly-per-space.yaml",
