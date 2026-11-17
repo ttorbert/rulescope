@@ -26,7 +26,7 @@ With a 5-minute interval and a 9-minute look-back, the rule has a **4-minute saf
 | 7 minutes late | 60% |
 | 9 or more minutes late | 100% |
 
-In general, events later than *look-back − interval* start to be missed, and events later than the full look-back are always missed. This was checked against real rules in the lab: the profiler estimated 55.8% against an observed 55.6% ([validation results](validation-results.md)).
+In general, events later than *look-back − interval* start to be missed, and events later than the full look-back are always missed. This was checked against real rules in the lab: the profiler estimated 55.8% against an observed 55.6% ([validation results](../modules/lag/docs/validation-results.md)).
 
 ### What the numbers are, and aren't
 
@@ -87,35 +87,39 @@ Data streams where some events have no `event.ingested`, so their lag can't be m
 
 ### Rule coverage
 
-How your enabled rules split:
+How your enabled rules split, from the Rule Catalog as of its last sync:
 
 | Group | Meaning |
 | --- | --- |
 | **Measured (@timestamp)** | Lag can cause misses; these rules are estimated |
 | **Unaffected (event.ingested)** | Lag can't cause misses |
-| **Unsupported** | The profiler can't estimate them; see the next panel |
+| **Can't estimate** | The profiler can't estimate them; see the next panel |
 
 A short *Rules at risk* list next to a large *Unaffected* count is a healthy result, not a broken tool.
 
-### Unsupported rules
+### Rules the profiler can't estimate
 
-Rules the profiler can't estimate, and why:
+Enabled rules without an estimate, and why, from the Rule Catalog's facts:
 - machine learning rules
 - ES|QL rules
 - rules that use a data view
 - rules whose index patterns only point at remote clusters
+- rules with no index patterns
+- rules whose schedule couldn't be parsed
+- rules that search a timestamp field other than `@timestamp` or `event.ingested`
 
-One more row can appear here: *more than 10,000 enabled rules in the space*. The profiler reads up to 10,000 enabled rules per space, so the rest of that space's rules aren't profiled. It's a notice, not a rule, so *Rule coverage* doesn't count it.
+The catalog reads up to 10,000 rules per space. A space with more shows a notice on the *Rule Catalog* dashboard.
 
 ### Profiler health
 
-For each workflow: the last run and its status, the number of runs, how many had no data or failed, and the rules seen. If *Last run* is more than an hour or two old, see [When the profiler stops](#when-the-profiler-stops).
+For each workflow: the last run and its status, the number of runs, how many had no data, a stale catalog or failed, and the rules seen. If *Last run* is more than an hour or two old, see [When the profiler stops](#when-the-profiler-stops).
 
 | Last status | Meaning |
 | --- | --- |
 | `success` | Measured the previous clock hour |
 | `no_data` | Worked, but had nothing to measure. *Note* says why: **no data in `logs-*` yet** (normal on a new cluster; results start in the first full hour after logs arrive), or **logs found, but none have `event.ingested`** (lag can't be measured until it's set; see the [setup guide](setup-guide.md#troubleshooting)) |
-| `failed` | Something went wrong. The `error` field in `lagprof-runs` says what |
+| `catalog_stale` | Didn't run the queries: the Rule Catalog's last successful sync was more than 2 hours old, or there was none yet. *Note* gives the last sync time. Check the *Rule Catalog* dashboard. A new install's first run usually records this, because it starts before the catalog's first sync finishes. |
+| `failed` | Something went wrong. The `error` field in `rulescope-lag-runs` says what |
 
 ---
 
@@ -156,19 +160,21 @@ Elastic Agent integrations set `event.ingested`. Other ingest paths, such as cus
 | Alert | Fires when | Respond by |
 | --- | --- | --- |
 | **Rule miss rate above 1%** | Any rule's estimate in the latest hour is above 1% (checked every 15 minutes) | Open *Rules at risk*, find the cause on the lag and host panels, and pick a fix from the table above |
-| **No completed run in 3 hours** | A profiler workflow has stopped completing: no `success` or `no_data` run (checked every 30 minutes) | See [When the profiler stops](#when-the-profiler-stops) |
+| **No completed run in 3 hours** | A profiler workflow has stopped completing: no `success` or `no_data` run (checked every 30 minutes). The alert shows the last status. | See [When the profiler stops](#when-the-profiler-stops) |
+| **Rule Catalog: no successful sync in 3 hours** | The catalog has stopped syncing, so the profiler has stopped too (`catalog_stale`) | Open the catalog sync's executions, as below, for `rulescope-catalog-sync` |
 
 The setup guide covers [sending alerts](setup-guide.md#9-send-alerts-somewhere) and changing the threshold.
 
 ## When the profiler stops
 
-1. In Kibana, open **Workflows › lagprof-hourly-… › Executions** and open the failed run. The error names the step that failed.
-2. The usual causes:
+1. Check *Profiler health*. If the last status is `catalog_stale`, the Rule Catalog is the problem: open **Workflows › rulescope-catalog-sync › Executions** instead.
+2. In Kibana, open **Workflows › rulescope-lag-hourly… › Executions** and open the failed run. The error names the step that failed.
+3. The usual causes:
    - The workflow was disabled.
-   - Its owner's API key expired or was deleted. Recreate it as in [setup step 7](setup-guide.md#7-give-the-workflow-its-own-limited-identity).
-   - A failed write, such as `rule_bulk_write_failed…`. Run `install` again.
+   - Its owner's API key expired or was deleted. Recreate it as in [setup step 7](setup-guide.md#7-give-the-workflows-their-own-limited-identity).
+   - A failed write, such as `rule_bulk_write_failed…` in the catalog sync. Run `install` again.
    - A license change.
-3. `python3 -m rulescope status --target-file <your target>` shows whether anything has drifted from the pack.
+4. `python3 -m rulescope status --target-file <your target>` shows whether anything has drifted from the pack.
 
 ---
 
@@ -184,12 +190,12 @@ The setup guide covers [sending alerts](setup-guide.md#9-send-alerts-somewhere) 
 
 ## Where the data lives
 
-Results are kept as ordinary indices you can query, chart or export. The [field reference](fields.md) describes every field.
+Results are kept as ordinary indices you can query, chart or export. The [field reference](../modules/lag/docs/fields.md) describes every field.
 
 | Index | Contents | Kept for |
 | --- | --- | --- |
-| `lagprof-results` | Miss rate per rule, data stream and hour | 90 days |
-| `lagprof-stream-stats` | Lag, gaps and clock problems per data stream and hour | 90 days |
-| `lagprof-host-lag` | Slow or skewed hosts per hour | 30 days |
-| `lagprof-runs` | One record per workflow run | 90 days |
-| `lagprof-rules` | Current rule inventory | rebuilt hourly |
+| `rulescope-lag-results` | Miss rate per rule, data stream and hour | 90 days |
+| `rulescope-lag-stream-stats` | Lag, gaps and clock problems per data stream and hour | 90 days |
+| `rulescope-lag-host-lag` | Slow or skewed hosts per hour | 30 days |
+| `rulescope-lag-runs` | One record per workflow run | 90 days |
+| `rulescope-catalog-rules` | Current rules, from the Rule Catalog (see its [README](../modules/catalog/README.md)) | rebuilt hourly |

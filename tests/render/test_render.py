@@ -9,9 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from rulescope import render  # noqa: E402
-from rulescope.core import WORKFLOW_FILES, WORKFLOW_TEMPLATE  # noqa: E402
 from rulescope.lint import bulk_row_problems, keep_columns  # noqa: E402
-from rulescope.resources import render_workflow  # noqa: E402
+from rulescope.resources import module_resources, render_module_workflow  # noqa: E402
 
 
 class TemplateTests(unittest.TestCase):
@@ -53,24 +52,35 @@ class TemplateTests(unittest.TestCase):
             self.r("x\n", "cluster")
 
 
-class LagWorkflowTests(unittest.TestCase):
-    def test_template_reproduces_checked_in_files_exactly(self):
-        for mode, path in WORKFLOW_FILES.items():
-            with self.subTest(mode=mode):
-                got = render.render_file(WORKFLOW_TEMPLATE, render.MODE_SCOPES[mode])
-                self.assertEqual(got, (ROOT / path).read_text())
-        self.assertEqual(render.stale_workflows(), [])
+class ModuleWorkflowTests(unittest.TestCase):
+    def workflows(self):
+        for module in ("catalog", "lag"):
+            for r in module_resources(module, None):
+                if r.kind == "workflow":
+                    yield r
 
     def test_installer_renders_from_template(self):
-        _, text = render_workflow("per-space", "soc", shared_stats=True)
+        lag = next(r for r in self.workflows() if r.module == "lag")
+        _, text = render_module_workflow(lag, "soc", shared_stats=True)
         self.assertIn("space_id: soc", text)
         self.assertNotIn("#%", text)
         self.assertNotIn("[[", text)
 
     def test_every_bulk_body_is_checked(self):
-        for text in render.generated_workflows().values():
+        lag = next(r for r in self.workflows() if r.module == "lag")
+        for space in (None, "soc"):
+            _, text = render_module_workflow(lag, space, shared_stats=True)
             self.assertEqual(text.count(".output.values %}"), 3)
             self.assertEqual(bulk_row_problems(text), [])
+
+    def test_every_workflow_renders_in_both_scopes(self):
+        for r in self.workflows():
+            for space in (None, "soc"):
+                with self.subTest(workflow=r.name, space=space):
+                    _, text = render_module_workflow(r, space)
+                    self.assertNotIn("#%", text)
+                    self.assertNotIn("[[", text)
+                    self.assertEqual(bulk_row_problems(text), [])
 
 
 class RowPositionTests(unittest.TestCase):
@@ -81,7 +91,7 @@ steps:
       body:
         query: |
           FROM x
-          | KEEP window_start, lagprof.rule.id,
+          | KEEP window_start, rulescope.rule.id,
                  events
           | LIMIT 10
         params:

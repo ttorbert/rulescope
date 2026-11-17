@@ -1,0 +1,35 @@
+{
+  "_rulescope_notes": [
+    "Created with POST /api/alerting/rule/rulescope-lag-stale-profiler. Keys starting with _rulescope are removed before sending.",
+    "Fires for each workflow (the global copy, or each per-space copy) that ran in the last 7 days but has no completed run (success or no_data) in the last 3 hours.",
+    "catalog_stale doesn't count as completed: no results were written. last_status says when that's the reason; the Rule Catalog's own alert fires too.",
+    "A copy that never ran at all isn't detected; the Profiler health panel shows that.",
+    "Confirmed on 9.5.6: Kibana accepts this .es-query ES|QL params shape (esqlQuery, timeField, timeWindowSize/Unit, threshold [0] with \">\")."
+  ],
+  "id": "rulescope-lag-stale-profiler",
+  "name": "Ingest Lag Profiler: no completed run in 3 hours",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "schedule": {
+    "interval": "30m"
+  },
+  "tags": [
+    "rulescope",
+    "rulescope-lag"
+  ],
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM rulescope-lag-runs\n| EVAL workflow = COALESCE(rulescope.space.id, \"global\"),\n       ok_recent = CASE(status IN (\"success\", \"no_data\") AND @timestamp >= NOW() - 3 hours, 1, 0)\n| INLINE STATS latest = MAX(@timestamp) BY workflow\n| STATS ok = SUM(ok_recent), last_run = MAX(@timestamp),\n        last_status = MAX(CASE(@timestamp == latest, status, null))\n     BY workflow\n| WHERE ok == 0\n| LIMIT 100"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 7,
+    "timeWindowUnit": "d",
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "size": 100
+  },
+  "actions": []
+}

@@ -23,8 +23,8 @@
 #   5. records the sync in rulescope-catalog-syncs
 #
 # The conventions ({{ x | json }}, the no-op delete at the top of each bulk
-# body, the run-start clock) are those of the lag workflow; see
-# kibana/workflows/lagprof-hourly-all-spaces.yaml.
+# body, the run-start clock) are shared with the lag workflow; see
+# modules/lag/workflows/hourly.yaml.tmpl.
 
 #% if global
 name: rulescope-catalog-sync

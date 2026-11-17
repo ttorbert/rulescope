@@ -2,7 +2,7 @@
 
 Nov 13, 2026 · @tammy · revised Nov 13, 2026 with the build plan review · updated Nov 14, 2026 to match the code at v0.1.0-dev
 
-> **Partly superseded.** [rulescope-design.md](rulescope-design.md) restructures this pack into a rule catalog plus report modules. Once it's built, rule fetching, pattern resolution, stale cleanup, the installer, workflow versions, naming and roles follow that document. The miss model, the lag queries, the dashboard panels and the validation here stay in force for the lag module.
+> **Partly superseded.** [rulescope-design.md](rulescope-design.md) restructured this pack into a rule catalog plus report modules. Rule fetching, pattern resolution and stale cleanup now happen in the [Rule Catalog](modules/catalog/README.md), and the installer, scopes, naming and roles follow that document. Names here are the old ones: `lagprof-*` indices are now `rulescope-lag-*`, `lagprof.*` fields are `rulescope.*`, and `lagprof-rules` and `lagprof-rule-streams` are replaced by the catalog's indices. The miss model, the lag queries, the dashboard panels and the validation here stay in force for the [lag module](modules/lag/README.md).
 
 This document describes the pack **as built**. Where the build changed the original plan, the text follows the code, and [build-plan.md](build-plan.md) records why. Reviewers should start with [Notes for reviewers](#notes-for-reviewers) near the end.
 
@@ -67,7 +67,7 @@ Worked example for a rule that runs every 5 minutes and looks back 9 minutes, so
 | 7 minutes | 60% |
 | 9 minutes or more | 100% |
 
-The model assumes that arrival times are spread evenly against the rule's schedule. It ignores index refresh delay, which is normally about a second, and delays in rule execution. A run that starts late or fails creates a gap, which Elastic's own gap detection already covers. I derived this formula rather than taking it from a source. A computer simulation confirms it: all 34 test points match within 4 standard errors. The lab test then checks it against real rules. The simulation also shows that runs starting late shrink the safe margin by about the length of the delay. That adds up to about *delay ÷ interval* to the miss rate near the edge of the margin, which matters for 1-minute rules only. Details are in [docs/miss-model.md](docs/miss-model.md).
+The model assumes that arrival times are spread evenly against the rule's schedule. It ignores index refresh delay, which is normally about a second, and delays in rule execution. A run that starts late or fails creates a gap, which Elastic's own gap detection already covers. I derived this formula rather than taking it from a source. A computer simulation confirms it: all 34 test points match within 4 standard errors. The lab test then checks it against real rules. The simulation also shows that runs starting late shrink the safe margin by about the length of the delay. That adds up to about *delay ÷ interval* to the miss rate near the edge of the margin, which matters for 1-minute rules only. Details are in [docs/miss-model.md](modules/lag/docs/miss-model.md).
 
 ## Architecture
 
@@ -189,7 +189,7 @@ Detection rules and workflows both belong to a Kibana space. The rules API only 
 | Scans of `logs-*` per hour | 3 | One per space, plus 2 for shared stats |
 | Best for | Most deployments | Managed providers and spaces owned by separate teams |
 
-Raw logs aren't divided by space, so stream stats and host lag are the same for every space. In per-space mode, exactly one copy writes them, chosen with `write_shared_stats: true`. Each copy's stale-data cleanup only touches its own space. [kibana/workflows/README.md](kibana/workflows/README.md) has the full comparison and install steps.
+Raw logs aren't divided by space, so stream stats and host lag are the same for every space. In per-space mode, exactly one copy writes them, chosen with `write_shared_stats: true`. Each copy's stale-data cleanup only touches its own space. [kibana/workflows/README.md](modules/lag/README.md) has the full comparison and install steps.
 
 ### Stages
 
@@ -220,7 +220,7 @@ Three ES|QL queries run each hour. They measure the **last full clock hour**, so
 
 The query counts events per data stream and lag second first, then joins rules to those counts. Joining raw events would copy every event once per rule. Every event with the same lag has the same chance of a miss, so the estimate is exact. Each event searched by three rules still counts once for each. Lags over 2 hours are grouped by whole minute to keep the row count down. That only matters for rules whose look-back is over 2 hours, where it can shift a miss chance by up to 60 seconds ÷ interval. Percentiles are computed once per stream on the raw events with `INLINE STATS`. Their columns (`stream_p50` and so on) are named so they don't collide with fields mapped in the lookup index, which would replace them in the join. Rows with no matching rule are dropped. Rules that search on `event.ingested` are left out here, because ingest lag doesn't affect them. The per-space version adds `lagprof.space.id == ?space_id` to the `WHERE` after the join.
 
-[esql/miss-rate.esql](esql/miss-rate.esql) is the reference copy; `python3 -m rulescope lint` checks that it matches both workflows.
+[esql/miss-rate.esql](modules/lag/esql/miss-rate.esql) is the reference copy; `python3 -m rulescope lint` checks that it matches both workflows.
 
 ```sql
 FROM logs-*
@@ -342,7 +342,7 @@ The first version joined raw events to rules. It took 63 seconds for 3 million e
 
 The dashboard answers one question first: which rules are missing events right now? Detail panels sit below it. Every panel reads the `lagprof-` indices, never raw logs, so the dashboard stays fast and shows history. Panels use ES|QL and see the dashboard's time range (7 days by default) on `@timestamp`. "Latest hour" panels pick the newest window in that range with `INLINE STATS latest = MAX(lagprof.window.start)`.
 
-[kibana/dashboards/build.py](kibana/dashboards/build.py) holds the panel queries in readable form and writes `lagprof-overview.json`, a Dashboards API body. Edit `build.py`, not the JSON; `make dashboard` runs every query against the lab first. It has ten panels:
+[kibana/dashboards/build.py](modules/lag/dashboards/build.py) holds the panel queries in readable form and writes `lagprof-overview.json`, a Dashboards API body. Edit `build.py`, not the JSON; `make dashboard` runs every query against the lab first. It has ten panels:
 
 | Panel | Shows | Source |
 | --- | --- | --- |
@@ -439,7 +439,7 @@ The workflow needs a dedicated role with the least access that works:
 - Write and delete on `lagprof-*`, and permission to use the ingest pipelines.
 - The workflow `execute` privilege, which 9.5.2 made enough to run a workflow.
 
-Confirmed on 9.5.6 ([elasticsearch/security/lagprof-workflow-role.json](elasticsearch/security/lagprof-workflow-role.json)):
+Confirmed on 9.5.6 ([elasticsearch/security/lagprof-workflow-role.json](modules/lag/elasticsearch/security/rulescope-lag-role.json)):
 - **Kibana features:** `securitySolutionRulesV4: read`, and `workflowsManagement`: `minimal_read`, `workflow_read`, `workflow_create`, `workflow_update`, `workflow_execute` and `workflow_execution_read` (not delete).
 - **Cluster:** `manage_own_api_key`.
 - **Indices:** `logs-*`: `read`, `view_index_metadata`. `lagprof-*`: `read`, `write`, `delete`, `create_index`, `auto_configure`, `maintenance` (for the refresh) and `view_index_metadata`.
@@ -467,7 +467,7 @@ For EQL sequences, the miss rate is a lower bound. A sequence fails if any one o
 
 The profiler is ready only when its estimates match what real rules actually miss in a controlled lab. This test also checks the miss formula itself.
 
-> **Result (Nov 13, 2026): PASS.** Every lag's observed miss rate was within 5 points of the formula, the profiler estimated 55.8% against 55.6% observed, and the `event.ingested` rule missed 0 of 3,000. See [docs/validation-results.md](docs/validation-results.md). `make validate` runs it ([scripts/lab/validate.py](scripts/lab/validate.py)). As built, events were sent over **90 minutes** (18 rule intervals) rather than three hours: 600 events per lag still gives a standard error of 2 points or less.
+> **Result (Nov 13, 2026): PASS.** Every lag's observed miss rate was within 5 points of the formula, the profiler estimated 55.8% against 55.6% observed, and the `event.ingested` rule missed 0 of 3,000. See [docs/validation-results.md](modules/lag/docs/validation-results.md). `make validate` runs it ([scripts/lab/validate.py](scripts/lab/validate.py)). As built, events were sent over **90 minutes** (18 rule intervals) rather than three hours: 600 events per lag still gives a standard error of 2 points or less.
 
 **Simulation first.** Before the lab test, a computer simulation runs 100,000 random runs per lag value for several interval and look-back pairs. It checks that the formula's curve matches.
 
@@ -629,14 +629,14 @@ None are open.
 
 | Concern | Where | Notes |
 | --- | --- | --- |
-| Orchestration | [kibana/workflows/](kibana/workflows/) | Both YAML files are rendered from `lagprof-hourly.yaml.tmpl`. Edit the template, then run `make render`; `lint` fails if the files drift. `lint` also checks each bulk body's `row[N]` positions against its query's `KEEP`. |
-| Miss math | [esql/miss-rate.esql](esql/miss-rate.esql) | Reference copy of the query inside both workflows |
-| Lag measurement | [esql/stream-stats.esql](esql/stream-stats.esql), [esql/host-lag.esql](esql/host-lag.esql) | Same: copies of queries in the workflows |
-| Rule parsing | [elasticsearch/ingest-pipelines/lagprof-rules-parse.json](elasticsearch/ingest-pipelines/lagprof-rules-parse.json) | A Painless script; decides `supported` |
-| Mappings | [elasticsearch/component-templates/lagprof-common.json](elasticsearch/component-templates/lagprof-common.json), [lagprof-rule-streams.json](elasticsearch/index-templates/lagprof-rule-streams.json) | `dynamic: false`; the lookup index has its own mapping |
+| Orchestration | [kibana/workflows/](modules/lag/workflows/) | Both YAML files are rendered from `lagprof-hourly.yaml.tmpl`. Edit the template, then run `make render`; `lint` fails if the files drift. `lint` also checks each bulk body's `row[N]` positions against its query's `KEEP`. |
+| Miss math | [esql/miss-rate.esql](modules/lag/esql/miss-rate.esql) | Reference copy of the query inside both workflows |
+| Lag measurement | [esql/stream-stats.esql](modules/lag/esql/stream-stats.esql), [esql/host-lag.esql](modules/lag/esql/host-lag.esql) | Same: copies of queries in the workflows |
+| Rule parsing | [elasticsearch/ingest-pipelines/lagprof-rules-parse.json](modules/catalog/elasticsearch/ingest-pipelines/rulescope-catalog-rules-parse.json) | A Painless script; decides `supported` |
+| Mappings | [elasticsearch/component-templates/lagprof-common.json](modules/lag/elasticsearch/component-templates/rulescope-lag.json), [lagprof-rule-streams.json](modules/catalog/elasticsearch/index-templates/rulescope-catalog-rule-streams.json) | `dynamic: false`; the lookup index has its own mapping |
 | Installer | [rulescope/](rulescope/) | Standard library only. `resources.pack_resources()` lists everything it manages, in install order; `modules.py` lists the modules. [scripts/lagprof.py](scripts/lagprof.py) is a wrapper for the lab scripts. |
-| Dashboard | [kibana/dashboards/build.py](kibana/dashboards/build.py) | Generates `lagprof-overview.json`; don't hand-edit the JSON |
-| Alerts | [kibana/alerting/](kibana/alerting/) | `_lagprof_notes` keys are stripped before sending |
+| Dashboard | [kibana/dashboards/build.py](modules/lag/dashboards/build.py) | Generates `lagprof-overview.json`; don't hand-edit the JSON |
+| Alerts | [kibana/alerting/](modules/lag/alerting/) | `_lagprof_notes` keys are stripped before sending |
 | Formula check | [tests/model/simulate_rule_schedule.py](tests/model/simulate_rule_schedule.py) | Monte Carlo; doesn't use the formula |
 | Lab validation | [scripts/lab/validate.py](scripts/lab/validate.py) | `setup`, `send` and `score` against real rule alerts |
 | Lab spikes and helpers | [tests/lab/](tests/lab/) | Milestone 0 spikes, rule seeding, prebuilt rule analysis, a workflow runner. Not run by `make test`. |

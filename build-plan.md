@@ -17,7 +17,8 @@ The lag-only code is tagged `v0.1.0-lab` as a checkpoint.
 | 1. Installer package and module support | Done: `python3 -m rulescope`, no behavior change |
 | 2. Workflow templates and rendering | Done: both lag workflows are rendered from one template, byte for byte; lint checks bulk row positions against each query's `KEEP` |
 | 3. Catalog module | Done: sync and snapshot workflows in both scopes, pipelines, role, dashboard and stale-catalog alert. See [modules/catalog/README.md](modules/catalog/README.md). The lab syncs 2,302 rules in Default (2,304 in all) with disabled rules; the overlap test and a least-privilege run pass |
-| 4. Lag module onto the catalog | Next |
+| 4. Lag module onto the catalog | Done: the lag workflow reads `rulescope-catalog-rule-streams` and records `catalog_stale` when the catalog hasn't synced in 2 hours. Indices renamed to `rulescope-lag-*`; lab history migrated. The lab validation passed again (run `step4-20261116-2116`: estimate 55.8%, observed 55.2%) |
+| 5. Cluster and tenant fields | Next |
 
 ## Status at a glance (Nov 14, 2026)
 
@@ -45,7 +46,7 @@ The lab runs on Rancher Desktop with Elasticsearch and Kibana 9.5.6. `make lab-u
 
 **Done and checked in the lab:**
 - **Milestone 0:**
-  - The simulation confirms the formula and quantifies the effect of late rule runs ([docs/miss-model.md](docs/miss-model.md)).
+  - The simulation confirms the formula and quantifies the effect of late rule runs ([docs/miss-model.md](modules/lag/docs/miss-model.md)).
   - The workflow, ES|QL and rules API questions are answered (design doc, "Questions answered in the lab").
 - **Milestone 1:** the stream-stats and host-lag queries, their templates, and the installer.
 - **Milestone 2:**
@@ -134,7 +135,7 @@ Ordered by impact. Items marked **verify** are my best understanding and should 
    - `lagprof-hourly-all-spaces.yaml` loops over every space using `/s/<space>/` paths (**verify** that `kibana.request` accepts the prefix).
    - `lagprof-hourly-per-space.yaml` is installed once in each space.
 
-   [kibana/workflows/README.md](kibana/workflows/README.md) explains how to choose.
+   [kibana/workflows/README.md](modules/lag/README.md) explains how to choose.
 
 ### Medium impact
 
@@ -483,7 +484,7 @@ The full validation runs in the Rancher Desktop lab. Keep the machine awake for 
 
 ## Decisions
 
-- **Spaces:** both versions ship, and the user chooses. See [kibana/workflows/README.md](kibana/workflows/README.md).
+- **Spaces:** both versions ship, and the user chooses. See [kibana/workflows/README.md](modules/lag/README.md).
 - **Free edition:** out of scope.
 - **Lab:** Rancher Desktop (dockerd engine, VM raised to 8 GB and 4 CPUs). Elastic Cloud and Serverless are only used for short installer smoke tests in Milestone 5.
 - **Install targets:** one installer, `scripts/lagprof.py`, loads the same resource files into the Rancher Desktop lab, self-managed, Elastic Cloud and Serverless.

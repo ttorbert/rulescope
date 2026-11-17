@@ -2,9 +2,8 @@
 
 Each module owns a set of resources (see resources.pack_resources). A module can
 require others; requirements are installed first and removed last. The catalog
-syncs every rule; the Ingest Lag Profiler still keeps its own rule inventory until
-it moves onto the catalog (step 4 of rulescope-design.md), so for now it doesn't
-require the catalog, and the default install is the lag module alone.
+syncs every rule; report modules such as the Ingest Lag Profiler read it, so they
+require it.
 """
 
 from __future__ import annotations
@@ -23,15 +22,19 @@ class Module:
     indices: str = ""
     # Workflow names start with this, in every scope.
     workflow_prefix: str = ""
+    # Templates in modules/<name>/workflows/, in install order. Each installs as
+    # rulescope-<module>-<template>, plus -space-<id> for a per-space copy.
+    workflows: tuple[str, ...] = ()
 
 
 MODULES: dict[str, Module] = {
     "catalog": Module("catalog", "Rule Catalog", indices="rulescope-catalog-*",
-                      workflow_prefix="rulescope-catalog-"),
-    "lag": Module("lag", "Ingest Lag Profiler", indices="lagprof-*", workflow_prefix="lagprof-hourly"),
+                      workflow_prefix="rulescope-catalog-", workflows=("sync", "snapshot")),
+    "lag": Module("lag", "Ingest Lag Profiler", requires=("catalog",), indices="rulescope-lag-*",
+                  workflow_prefix="rulescope-lag-", workflows=("hourly",)),
 }
 
-DEFAULT_MODULES: tuple[str, ...] = ("lag",)
+DEFAULT_MODULES: tuple[str, ...] = ("catalog", "lag")
 
 
 def parse_modules(text: str | None) -> tuple[str, ...]:

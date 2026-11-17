@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the ingest pipeline fixtures against a cluster with the _simulate API.
 
-The pipelines are sent inline from elasticsearch/ingest-pipelines/, so nothing
-needs to be installed first. Expectations use dotted paths; null means the field
+The pipelines are sent inline from modules/*/elasticsearch/ingest-pipelines/. The
+parse pipelines end by calling rulescope-stamp by name, so the catalog must be
+installed on the cluster (python3 -m rulescope install --modules catalog). Expectations use dotted paths; null means the field
 must be absent, and "*" means it must be present with any value.
 
     run_simulate.py --target-file targets/docker.env
@@ -16,8 +17,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
-import lagprof  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from rulescope.client import Client  # noqa: E402
+from rulescope.config import load_config  # noqa: E402
+from rulescope.resources import strip_notes  # noqa: E402
 
 MISSING = object()
 
@@ -50,13 +53,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--target-file", default="targets/docker.env")
     args = ap.parse_args()
-    client = lagprof.Client(lagprof.load_config(args.target_file))
+    client = Client(load_config(args.target_file))
     fixtures = json.loads((ROOT / "tests/pipelines/fixtures.json").read_text())
 
     failures = total = 0
     for pipeline, cases in fixtures.items():
-        body = lagprof.strip_notes(json.loads(
-            (ROOT / f"elasticsearch/ingest-pipelines/{pipeline}.json").read_text()))
+        path = next(ROOT.glob(f"modules/*/elasticsearch/ingest-pipelines/{pipeline}.json"))
+        body = strip_notes(json.loads(path.read_text()))
         _, out = client.es("POST", "/_ingest/pipeline/_simulate", {
             "pipeline": body,
             "docs": [{"_source": c["input"]} for c in cases],

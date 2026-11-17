@@ -70,7 +70,7 @@ class Client:
 
     def kb(self, method: str, path: str, body=None, allow: tuple[int, ...] = (),
            raw: bytes | None = None, content_type: str | None = None):
-        headers = {"kbn-xsrf": "lagprof"}
+        headers = {"kbn-xsrf": "rulescope"}
         if self.serverless:
             headers["elastic-api-version"] = SERVERLESS_API_VERSION
         if content_type:

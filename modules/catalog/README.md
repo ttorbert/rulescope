@@ -2,7 +2,7 @@
 
 The catalog keeps a copy of every Elastic Security detection rule, enabled or not, in every space it covers. It also records which data streams each enabled rule searches, and keeps a daily history. Report modules read the catalog instead of each calling the rules API. It runs entirely inside Elastic: two workflows, three ingest pipelines, four indices, a dashboard and an alert.
 
-The lag module doesn't read the catalog yet. It moves onto it in step 4 of the [rulescope design](../../rulescope-design.md#plan). Until then the two modules install side by side and don't depend on each other.
+The [lag module](../lag/README.md) reads its rules and their data streams from the catalog, so installing it installs the catalog too. The installer refuses to remove the catalog while the lag module is installed, unless you add `--force`.
 
 ## Install
 
@@ -65,7 +65,7 @@ The **Rule Catalog** dashboard (`rulescope-catalog-health`) shows:
 
 Its builder is [dashboards/build.py](dashboards/build.py) (`make dashboard` checks every query against the lab first).
 
-The **Rule Catalog: no successful sync in 3 hours** alert (`rulescope-catalog-stale`) fires for each scope whose syncs have stopped succeeding. Report modules stop using a catalog more than 2 hours old, so their results have stopped too.
+The **Rule Catalog: no successful sync in 3 hours** alert (`rulescope-catalog-stale`) fires for each scope whose syncs have stopped succeeding. Report modules stop using a catalog more than 2 hours old: the lag module records its runs as `catalog_stale`, so its results have stopped too.
 
 ## Limits
 

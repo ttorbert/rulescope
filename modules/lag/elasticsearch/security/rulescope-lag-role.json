@@ -1,0 +1,64 @@
+{
+  "_rulescope_notes": [
+    "Role for the lag workflow (PUT /api/security/role/rulescope-lag, or rulescope-lag-<space> per space). Keys starting with _rulescope are removed before sending.",
+    "The installer replaces __SPACES__ with [\"*\"] for the global scope, or [\"<space id>\"] for a per-space copy.",
+    "read on logs-* for the lag queries. read on rulescope-catalog-* for the catalog's rules, rule/data stream pairs (the LOOKUP JOIN) and syncs (the freshness check). The lag module never calls the rules API, so it needs no Security feature privilege.",
+    "Scheduled runs use the identity of the account that last saved the workflow, so give this role to a dedicated user and set RULESCOPE_LAG_WORKFLOW_API_KEY. That's why the role can create and update workflows (not delete).",
+    "manage_own_api_key lets the dedicated user create the API key that owns the workflow. It covers only that user's own keys."
+  ],
+  "elasticsearch": {
+    "cluster": [
+      "manage_own_api_key"
+    ],
+    "indices": [
+      {
+        "names": [
+          "logs-*"
+        ],
+        "privileges": [
+          "read",
+          "view_index_metadata"
+        ]
+      },
+      {
+        "names": [
+          "rulescope-catalog-*"
+        ],
+        "privileges": [
+          "read",
+          "view_index_metadata"
+        ]
+      },
+      {
+        "names": [
+          "rulescope-lag-*"
+        ],
+        "privileges": [
+          "read",
+          "write",
+          "delete",
+          "create_index",
+          "auto_configure",
+          "maintenance",
+          "view_index_metadata"
+        ]
+      }
+    ]
+  },
+  "kibana": [
+    {
+      "base": [],
+      "feature": {
+        "workflowsManagement": [
+          "minimal_read",
+          "workflow_read",
+          "workflow_create",
+          "workflow_update",
+          "workflow_execute",
+          "workflow_execution_read"
+        ]
+      },
+      "spaces": "__SPACES__"
+    }
+  ]
+}

@@ -3,9 +3,9 @@
 
 Loads N synthetic events into logs-lagcost.events-default, spread over one past clock
 hour by event.ingested, with realistic lag. Then runs the pack's miss-rate query
-(esql/miss-rate.esql) against that hour while K rules search the stream, and reports
-the query time. The rule pairs go in a separate lookup index, lagprof-cost-rule-streams,
-so the hourly workflow's cleanup can't touch them.
+(modules/lag/esql/miss-rate.esql) against that hour while K rules search the stream, and reports
+the query time. The rule pairs go in a separate lookup index, rulescope-cost-rule-streams,
+so the catalog sync's cleanup can't touch them.
 
     cost_test.py load --events 1000000      add events (repeat to grow the hour)
     cost_test.py run --rules 1 5 20         time the query for each rule count
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lagprof  # noqa: E402
 
 STREAM = "logs-lagcost.events-default"
-LOOKUP = "lagprof-cost-rule-streams"
+LOOKUP = "rulescope-cost-rule-streams"
 # The measured hour: two hours before the first load, truncated, so it's a complete past
 # hour. Saved on first load so later runs measure the same hour.
 HOUR_FILE = lagprof.PACK_ROOT / "build" / "cost-hour"
@@ -83,25 +83,26 @@ def cmd_load(c: lagprof.Client, events: int, batch: int, seed: int) -> int:
 def set_rules(c: lagprof.Client, k: int) -> None:
     code, _ = c.es("GET", f"/{LOOKUP}", allow=(404,))
     if code == 404:
-        c.es("PUT", f"/{LOOKUP}", {"settings": {"index": {"mode": "lookup"}},
-                                    "mappings": lagprof.load_json(lagprof.LOOKUP_TEMPLATE)["template"]["mappings"]})
+        mappings = lagprof.load_json(lagprof.LOOKUP_INDICES[lagprof.LOOKUP_INDEX])["template"]["mappings"]
+        c.es("PUT", f"/{LOOKUP}", {"settings": {"index": {"mode": "lookup"}}, "mappings": mappings})
     c.es("POST", f"/{LOOKUP}/_delete_by_query?refresh=true", {"query": {"match_all": {}}})
     lines = []
     for i in range(k):
         lines.append(json.dumps({"index": {"_id": f"cost-rule-{i}"}}))
         lines.append(json.dumps({"data_stream": {"name": STREAM, "type": "logs", "dataset": "lagcost.events", "namespace": "default"},
-                                 "lagprof": {"space": {"id": "default"}, "run": {"id": "cost"},
-                                             "rule": {"id": f"cost-rule-{i}", "name": f"cost rule {i}", "interval_s": 300,
-                                                      "lookback_s": 360 + 60 * (i % 5), "timestamp_field": "@timestamp"}}}))
+                                 "rulescope": {"space": {"id": "default"}, "scope": "global", "sync": {"id": "cost"},
+                                               "rule": {"id": f"cost-rule-{i}", "name": f"cost rule {i}", "type": "query",
+                                                        "interval_s": 300, "lookback_s": 360 + 60 * (i % 5),
+                                                        "schedule_parsed": True, "timestamp_field": "@timestamp"}}}))
     c._send(c.cfg.es_url, "POST", f"/{LOOKUP}/_bulk?refresh=true", raw=("\n".join(lines) + "\n").encode(),
             headers={"Content-Type": "application/x-ndjson"})
 
 
 def query_text(path: str | None = None) -> str:
-    q = Path(path).read_text() if path else (lagprof.PACK_ROOT / "esql" / "miss-rate.esql").read_text()
+    q = Path(path).read_text() if path else (lagprof.PACK_ROOT / "modules" / "lag" / "esql" / "miss-rate.esql").read_text()
     end = HOUR + timedelta(hours=1)
     q = q.replace("FROM logs-*", f"FROM {STREAM}", 1)
-    q = q.replace("lagprof-rule-streams", LOOKUP)
+    q = q.replace("rulescope-catalog-rule-streams", LOOKUP)
     q = q.replace("DATE_TRUNC(1 hour, NOW()) - 25 hours", f'TO_DATETIME("{iso(end - timedelta(hours=25))}")')
     q = q.replace("DATE_TRUNC(1 hour, NOW()) - 1 hour", f'TO_DATETIME("{iso(HOUR)}")')
     q = q.replace("DATE_TRUNC(1 hour, NOW())", f'TO_DATETIME("{iso(end)}")')

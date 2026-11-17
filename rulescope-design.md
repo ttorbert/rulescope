@@ -254,6 +254,17 @@ The lag module reads rule settings that are at most one sync old, which is up to
 - **Indices:** `rulescope-lag-results`, `rulescope-lag-stream-stats`, `rulescope-lag-host-lag`, `rulescope-lag-runs`.
 - **Done when:** the 105-minute lab validation passes again, within the same tolerance as before.
 
+**As built (step 4, confirmed on 9.5.6):**
+- **Freshness check.** One search of `rulescope-catalog-syncs` returns the latest successful sync for the module's scope and a count of those in the last 2 hours. An `if` step runs the module on a count above zero, and otherwise records `catalog_stale` with the last sync time in `reason`. Both branches were run in the lab, including a catalog with no sync at all.
+- **Same scope as the catalog.** Each lag copy reads the catalog of its own scope (`global`, or `space:<id>`), and the installer installs both in one scope. Installing lag per space while a global catalog is installed is refused, like any other scope conflict.
+- **Eligibility in the query.** The miss-rate query keeps joined pairs where `schedule_parsed`, `timestamp_field == "@timestamp"`, and the type isn't machine learning or ES|QL. The run record's `rules_supported` uses the same facts plus local index patterns, from one ES|QL count over `rulescope-catalog-rules`.
+- **Run records** carry `rulescope.scope`. Results do too. Stream stats and host lag don't, because they're shared by every copy; so `uninstall --space <id> --delete-data` deletes by scope and leaves them.
+- **First run.** A new install's lag run usually starts before the catalog's first sync finishes, so it records `catalog_stale`. That's documented rather than worked around: the next hourly run uses the catalog.
+- **Role.** `rulescope-lag` reads `logs-*` and `rulescope-catalog-*`, writes `rulescope-lag-*`, and has no Security feature privilege. A run as a user holding only this role succeeded in the lab.
+- **No-op bulk line.** Every lag index is a data stream, and a bulk `delete` in a data stream is rejected. The first line of each bulk body deletes from `rulescope-lag-noop`, an index that's never created.
+- **Uninstall order.** `uninstall --modules lag` leaves the catalog; `--modules catalog` is refused while a lag copy is installed, unless `--force`.
+- **Version markers** on installed resources are now `rulescope_version` and `rulescope_fingerprint` (tag `rulescope-version:`). The old `lagprof_*` markers are still read, so an upgrade doesn't reinstall unchanged resources.
+
 ### coverage: Coverage Report
 
 - **Reference data:** `rulescope-coverage-attack`, a lookup index built by `scripts/build_attack_reference.py` from MITRE's published ATT&CK data. It holds tactic IDs, names and display order, technique IDs and names, sub-technique flags, and deprecated or revoked flags. Each document records its ATT&CK version. The installer loads the version shipped with the pack, and a newer version can be loaded later.
@@ -292,8 +303,8 @@ The lag module reads rule settings that are at most one sync old, which is up to
 
 With four modules and two scopes, hand-kept YAML copies would mean up to eight near-identical files. Instead:
 
-- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`. The catalog's are in [modules/catalog/workflows/](modules/catalog/workflows/). (Built in step 2: the lag template is `kibana/workflows/lagprof-hourly.yaml.tmpl` until the module folders arrive in step 4. Its directives are line-based `#%` comments, so they never collide with Liquid; see `rulescope/render.py`.)
-- `rulescope render` produces the `global` and `space:<id>` versions, using Python's standard library only, as the installer does today.
+- Each workflow is written once as a template in `modules/<module>/workflows/<name>.yaml.tmpl`: [modules/catalog/workflows/](modules/catalog/workflows/) and [modules/lag/workflows/](modules/lag/workflows/). Directives are line-based `#%` comments, so they never collide with Liquid; see `rulescope/render.py`.
+- The installer renders the `global` or `space:<id>` version at install time, using Python's standard library only. `rulescope render-workflow` writes them to `build/` for a manual import. (Step 2 kept rendered copies of the lag workflow in the repo; step 4 dropped them.)
 - `lint` renders every version and checks:
   - the ES|QL queries match `modules/<module>/esql/`;
   - the row positions in each bulk body match the query's `KEEP` columns, which today's lint doesn't check;
@@ -415,7 +426,7 @@ Steps 0 to 6 total about 41 to 65 hours before the first public release.
 
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
-| The restructure breaks validated lag behavior | Wrong estimates or lost history | Step 2 must reproduce today's workflows exactly; rerun the lab validation in step 4 |
+| The restructure breaks validated lag behavior | Wrong estimates or lost history | Step 2 reproduced the workflows exactly; step 4 reran the lab validation |
 | Scope multiplies with modules | Per-space installs grow complicated | Generated workflows, scope rules enforced by the installer, scope recorded on every document |
 | Modules read a stale catalog | Estimates use rule settings up to an hour old | Freshness check in every module run and on every dashboard |
 | Scope creep before the first release | Release slips | Coverage, schedule and cross-cluster come after `v0.2.0` |

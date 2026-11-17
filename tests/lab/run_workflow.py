@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Import (or update) a workflow YAML in the lab, run it once, and report.
 
-    run_workflow.py kibana/workflows/lagprof-hourly-all-spaces.yaml
-    run_workflow.py build/lagprof-hourly-space-soc.yaml --space soc
+    run_workflow.py build/rulescope-lag-hourly.yaml
+    run_workflow.py build/rulescope-lag-hourly-space-soc.yaml --space soc
 
-Prints the execution status, failed steps with their errors, and document counts
-in the lagprof-* indices (or rulescope-catalog-* for a catalog workflow).
+Write the YAML first with python3 -m rulescope render-workflow. Prints the execution
+status, failed steps with their errors, and document counts in the module's indices.
 """
 
 from __future__ import annotations
@@ -21,8 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import lagprof  # noqa: E402
 
-INDICES = ("lagprof-rules", "lagprof-rule-streams", "lagprof-results", "lagprof-stream-stats",
-           "lagprof-host-lag", "lagprof-runs")
+INDICES = ("rulescope-lag-results", "rulescope-lag-stream-stats", "rulescope-lag-host-lag", "rulescope-lag-runs")
 CATALOG_INDICES = ("rulescope-catalog-rules", "rulescope-catalog-rule-streams", "rulescope-catalog-syncs",
                    "rulescope-catalog-rule-history")
 

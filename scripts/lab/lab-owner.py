@@ -2,15 +2,15 @@
 """Create a lab workflow owner: a user with only one module's workflow role, and an
 API key created as that user.
 
-    lab-owner.py                     lagprof-runner, role lagprof-workflow, build/lab-owner-key
+    lab-owner.py --module lag        rulescope-lag-runner, role rulescope-lag, build/lab-owner-key-lag
     lab-owner.py --module catalog    rulescope-catalog-runner, role rulescope-catalog,
                                      build/lab-owner-key-catalog
     lab-owner.py --module catalog --role rulescope-catalog-soc   (a per-space copy's role)
 
-Then `LAGPROF_WORKFLOW_API_KEY=$(cat build/lab-owner-key) python3 -m rulescope install ...`
-(or RULESCOPE_CATALOG_WORKFLOW_API_KEY for the catalog) saves the workflows as that
-user, so their scheduled runs use only that role's privileges. The role must exist,
-so install the module once first. `make lab-owner` does it for the lag module. Lab only.
+Then RULESCOPE_<MODULE>_WORKFLOW_API_KEY=<key> python3 -m rulescope install ...
+saves the module's workflows as that user, so their scheduled runs use only that
+role's privileges. The role must exist, so install the module once first.
+`make lab-owner` does both modules. Lab only.
 """
 import argparse
 import secrets
@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lagprof  # noqa: E402
 
-OWNERS = {"lag": ("lagprof-runner", "lagprof-workflow", "lab-owner-key"),
+OWNERS = {"lag": ("rulescope-lag-runner", "rulescope-lag", "lab-owner-key-lag"),
           "catalog": ("rulescope-catalog-runner", "rulescope-catalog", "lab-owner-key-catalog")}
 
 

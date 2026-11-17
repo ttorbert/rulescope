@@ -1,0 +1,130 @@
+{
+  "_rulescope_notes": [
+    "Fields of the lag module's documents: results, stream stats, host lag and run summaries. Used with rulescope-common, which holds the identity fields (scope, space, cluster, tenant) and sets rulescope-stamp as the default pipeline.",
+    "dynamic: false, so fields not listed are kept in _source but not indexed.",
+    "Results and run summaries carry rulescope.scope. Stream stats and host lag come from raw logs, which aren't divided by space, so they don't."
+  ],
+  "template": {
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "rulescope": {
+          "properties": {
+            "run": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "window": {
+              "properties": {
+                "start": {
+                  "type": "date"
+                }
+              }
+            },
+            "rule": {
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "interval_s": {
+                  "type": "long"
+                },
+                "lookback_s": {
+                  "type": "long"
+                }
+              }
+            }
+          }
+        },
+        "data_stream": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            },
+            "namespace": {
+              "type": "keyword"
+            }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "events": {
+          "type": "long"
+        },
+        "est_missed": {
+          "type": "double"
+        },
+        "miss_rate_pct": {
+          "type": "double"
+        },
+        "unmeasured_events": {
+          "type": "long"
+        },
+        "lag_p50_s": {
+          "type": "double"
+        },
+        "lag_p95_s": {
+          "type": "double"
+        },
+        "lag_p99_s": {
+          "type": "double"
+        },
+        "lag_max_s": {
+          "type": "long"
+        },
+        "negative_lag_events": {
+          "type": "long"
+        },
+        "recommended_lookback_s": {
+          "type": "long"
+        },
+        "wrote_shared_stats": {
+          "type": "boolean"
+        },
+        "spaces_with_rules": {
+          "type": "long"
+        },
+        "rules_seen": {
+          "type": "long"
+        },
+        "rules_supported": {
+          "type": "long"
+        },
+        "streams_matched": {
+          "type": "long"
+        },
+        "result_rows": {
+          "type": "long"
+        },
+        "status": {
+          "type": "keyword"
+        },
+        "error": {
+          "type": "match_only_text"
+        },
+        "reason": {
+          "type": "keyword",
+          "ignore_above": 1024
+        }
+      }
+    }
+  }
+}

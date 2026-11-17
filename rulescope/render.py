@@ -13,9 +13,10 @@ the Liquid `{{ }}` and `{% %}` that Kibana evaluates at run time:
     #% # TEXT                           a note for template readers
 
 Scopes:
-    global   one copy reads rules in every space (today's "all-spaces" workflow)
-    space    one copy per space (today's "per-space" workflow); render_workflow fills
-             in the space ID and the shared-stats switch afterwards
+    global   one copy covers every space (the installer's --workflow all-spaces)
+    space    one copy per space (--workflow per-space); the installer passes
+             [[space_id]] and any module params, such as the lag module's
+             [[write_shared_stats]]
 
 Standard library only, like the rest of the installer.
 """
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 import re
 
-from .core import PACK_ROOT, WORKFLOW_FILES, WORKFLOW_TEMPLATE, ConfigError
+from .core import PACK_ROOT, ConfigError
 
 SCOPES = ("global", "space")
 
@@ -110,30 +111,3 @@ def render_template(text: str, scope: str, source: str = "template",
 
 def render_file(rel: str, scope: str, params: dict[str, str] | None = None) -> str:
     return render_template((PACK_ROOT / rel).read_text(), scope, source=rel, params=params)
-
-
-def generated_workflows() -> dict[str, str]:
-    """The checked-in workflow files and the text the template renders for each.
-
-    The files stay in the repo for anyone importing a workflow by hand; `render`
-    rewrites them and `lint` fails when they've drifted from the template."""
-    return {path: render_file(WORKFLOW_TEMPLATE, MODE_SCOPES[mode]) for mode, path in WORKFLOW_FILES.items()}
-
-
-def stale_workflows() -> list[str]:
-    """Checked-in workflow files that differ from what the template renders."""
-    out = []
-    for path, text in generated_workflows().items():
-        f = PACK_ROOT / path
-        if not f.exists() or f.read_text() != text:
-            out.append(path)
-    return out
-
-
-def write_workflows() -> list[str]:
-    """Rewrite the checked-in workflow files from the template. Returns the files changed."""
-    changed = stale_workflows()
-    for path, text in generated_workflows().items():
-        if path in changed:
-            (PACK_ROOT / path).write_text(text)
-    return changed

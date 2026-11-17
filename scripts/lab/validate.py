@@ -159,7 +159,7 @@ def alert_ids(c: lagprof.Client, rule_id: str, run: str) -> set[str]:
 
 def profiler_estimate(c: lagprof.Client, run: str, start: str, end: str) -> tuple[int, float] | None:
     """Run the pack's miss-rate query over the validation window, for this run's events only."""
-    q = (lagprof.PACK_ROOT / "esql" / "miss-rate.esql").read_text()
+    q = (lagprof.PACK_ROOT / "modules" / "lag" / "esql" / "miss-rate.esql").read_text()
     q = q.replace("FROM logs-*\n", f'FROM logs-*\n| WHERE STARTS_WITH(event.id, "{run}-")\n', 1)
     q = q.replace("DATE_TRUNC(1 hour, NOW()) - 25 hours", f'TO_DATETIME("{start}") - 1 hour')
     q = q.replace("DATE_TRUNC(1 hour, NOW()) - 1 hour", f'TO_DATETIME("{start}")')
@@ -169,7 +169,7 @@ def profiler_estimate(c: lagprof.Client, run: str, start: str, end: str) -> tupl
     events = missed = 0
     for v in out["values"]:
         row = dict(zip(cols, v))
-        if row["data_stream.dataset"] == DATASET and row["lagprof.rule.name"] == "validation: timestamp":
+        if row["data_stream.dataset"] == DATASET and row["rulescope.rule.name"] == "validation: timestamp":
             events += row["events"]
             missed += row["est_missed"]
     return (events, missed) if events else None
@@ -212,15 +212,15 @@ def mechanism_check(c: lagprof.Client, sent: list[dict], caught: set[str]) -> tu
 
 
 def ensure_profiled(c: lagprof.Client) -> None:
-    """The estimate needs the validation rule in lagprof-rule-streams; run the workflow if it isn't."""
-    _, n = c.es("POST", "/lagprof-rule-streams/_count",
-                {"query": {"term": {"lagprof.rule.name": "validation: timestamp"}}}, allow=(404,))
+    """The estimate needs the validation rule in the catalog's rule/data stream pairs; sync if it isn't."""
+    _, n = c.es("POST", "/rulescope-catalog-rule-streams/_count",
+                {"query": {"term": {"rulescope.rule.name": "validation: timestamp"}}}, allow=(404,))
     if n.get("count"):
         return
     _, wl = c.kb("GET", "/api/workflows?size=1000")
-    ids = [w["id"] for w in wl.get("results", []) if w.get("name") == "lagprof-hourly-all-spaces"]
+    ids = [w["id"] for w in wl.get("results", []) if w.get("name") == "rulescope-catalog-sync"]
     if not ids:
-        print("No all-spaces workflow in the Default space; can't refresh the rule pairs.")
+        print("No global catalog sync in the Default space; can't refresh the rule pairs.")
         return
     _, r = c.kb("POST", f"/api/workflows/workflow/{ids[0]}/run", {"inputs": {}})
     for _ in range(60):
@@ -228,7 +228,7 @@ def ensure_profiled(c: lagprof.Client) -> None:
         if e["status"] not in ("pending", "running", "waiting"):
             break
         time.sleep(3)
-    print(f"Ran the workflow to pick up the validation rules: {e['status']}")
+    print(f"Ran the catalog sync to pick up the validation rules: {e['status']}")
 
 
 def cmd_score(c: lagprof.Client, run: str, tolerance: float) -> int:

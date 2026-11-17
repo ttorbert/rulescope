@@ -1,0 +1,426 @@
+#% # Template for the lag workflow, rendered by the installer for the global scope
+#% # or a space scope. [[space_id]] and [[write_shared_stats]] are installer params
+#% # in a space scope. `python3 -m rulescope render-workflow --modules lag` writes a
+#% # copy to build/ for a manual import. Directives are described in rulescope/render.py;
+#% # `#%` lines never reach the output.
+#% if global
+# rulescope-lag-hourly (global)
+#
+# Estimates how many events each enabled detection rule misses because logs
+# arrive late, for rules in every space the Rule Catalog covers. Install one
+# copy, in the Default space.
+#% else
+# rulescope-lag-hourly (space [[space_id]])
+#
+# Estimates how many events each enabled detection rule in the [[space_id]]
+# space misses because logs arrive late. One copy per space. Stream stats and
+# host lag come from raw logs, not rules, so they're the same for every space:
+# exactly one copy writes them (consts.write_shared_stats).
+#% end
+#
+# Rules and the data streams they search come from the Rule Catalog
+# (rulescope-catalog-rules and the rulescope-catalog-rule-streams lookup index),
+# so this workflow never calls the rules API. If the catalog's last successful
+# sync is more than 2 hours old, the run records status catalog_stale and writes
+# no results.
+#
+# Tested on 9.5.6 in the Rancher Desktop lab. What the lab confirmed:
+#   {{ x }}           Liquid interpolation; {% for %} and {% if %} work in paths and bodies
+#   {{ x | json }}    safe JSON for strings, arrays, numbers and null
+#   ${{ x }}          type-preserving value in a JSON body
+#   execution.id      unique ID for this run; error.message in the failure fallback
+#   settings.on-failure.fallback   runs when any step fails
+#
+# Every write is one _bulk request. Bulk reports per-document errors without failing
+# the step, so rerunning an hour skips rows that already exist instead of failing.
+# Each bulk body starts with a delete in an index that's never created, so the body
+# is never empty when a query returns no rows. (A delete in a data stream is
+# rejected, so it can't be one of the result data streams.)
+
+#% if global
+name: rulescope-lag-hourly
+description: rulescope Ingest Lag Profiler. Estimates detection rule miss rates from ingest lag, across all spaces.
+#% else
+name: rulescope-lag-hourly-space-[[space_id]]
+description: rulescope Ingest Lag Profiler. Estimates detection rule miss rates from ingest lag, for the [[space_id]] space.
+#% end
+enabled: true
+tags: [rulescope, rulescope-lag]
+
+consts:
+#% if global
+  scope: global
+#% else
+  scope: space:[[space_id]]
+  space_id: [[space_id]]
+  # true in exactly one copy, false in all others
+  write_shared_stats: [[write_shared_stats]]
+#% end
+
+triggers:
+  - type: scheduled
+    with:
+      every: 1h
+
+settings:
+  on-failure:
+    fallback:
+      - name: record_failure
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-lag-runs/_doc
+          body:
+            rulescope:
+              run: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+#% if space
+              space: { id: "{{ consts.space_id }}" }
+#% end
+            status: failed
+            error: "{{ error.message }}"
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Catalog freshness: the catalog in the same scope as this workflow (the
+  # installer installs both modules in one scope). A run on a catalog more than
+  # 2 hours old would estimate with rule settings that may have changed, so it
+  # records catalog_stale instead.
+  # ---------------------------------------------------------------------------
+  - name: catalog
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /rulescope-catalog-syncs/_search
+      body:
+        size: 0
+        query:
+          bool:
+            filter:
+              - term: { kind: sync }
+              - term: { status: success }
+              - term: { rulescope.scope: "{{ consts.scope }}" }
+        aggs:
+          last_sync: { max: { field: "@timestamp" } }
+          fresh: { filter: { range: { "@timestamp": { gte: now-2h } } } }
+
+  - name: catalog_check
+    type: if
+    condition: "steps.catalog.output.aggregations.fresh.doc_count > 0"
+    steps:
+      # -----------------------------------------------------------------------
+      # Rule summary counts for the run record, from the catalog. A rule can be
+      # estimated when it has local index patterns, a parsed schedule, and isn't
+      # a machine learning or ES|QL rule. Of those, only rules that search
+      # @timestamp get results; rules on event.ingested can't miss events because
+      # of lag.
+      # -----------------------------------------------------------------------
+      - name: count_rules
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /_query
+          body:
+            query: |
+              FROM rulescope-catalog-rules
+#% if global
+              | WHERE rulescope.rule.enabled
+#% else
+              | WHERE rulescope.rule.enabled AND rulescope.space.id == ?space_id
+#% end
+              | EVAL estimable = rulescope.rule.index_patterns_csv IS NOT NULL
+                  AND rulescope.rule.schedule_parsed
+                  AND rulescope.rule.type NOT IN ("machine_learning", "esql")
+              | STATS rules_seen = COUNT(*),
+                      rules_supported = SUM(CASE(estimable, 1, 0)),
+                      spaces = COUNT_DISTINCT(rulescope.space.id)
+              | EVAL rules_supported = COALESCE(rules_supported, 0)
+              | KEEP rules_seen, rules_supported, spaces
+#% if space
+            params:
+              - space_id: "{{ consts.space_id }}"
+#% end
+
+      - name: count_pairs
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-catalog-rule-streams/_count
+          body:
+            query:
+              bool:
+                filter:
+#% if space
+                  - term: { rulescope.space.id: "{{ consts.space_id }}" }
+#% end
+                  - term: { rulescope.rule.schedule_parsed: true }
+                  - term: { rulescope.rule.timestamp_field: "@timestamp" }
+
+      # -----------------------------------------------------------------------
+      # Data check. ES|QL rejects a query that names a column no logs-* index maps,
+      # so on a new cluster with no logs yet, or one whose logs have no
+      # event.ingested, the queries below would fail every run. Check first, and
+      # record the run as no_data with a reason instead.
+      # Both searches stop at the first match, so they cost almost nothing.
+      # -----------------------------------------------------------------------
+      - name: check_logs
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /logs-*/_search?ignore_unavailable=true&allow_no_indices=true
+          body:
+            size: 0
+            terminate_after: 1
+            track_total_hits: true
+
+      - name: check_measurable
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /logs-*/_search?ignore_unavailable=true&allow_no_indices=true
+          body:
+            size: 0
+            terminate_after: 1
+            track_total_hits: true
+            query: { exists: { field: event.ingested } }
+
+      - name: measure
+        type: if
+        condition: "steps.check_measurable.output.hits.total.value > 0"
+        steps:
+          # -------------------------------------------------------------------
+          # Run the queries and save the rows.
+          # Each query ends with KEEP, so the row positions below are fixed.
+          # Windows are whole clock hours, and document IDs are built from the
+          # window, so rerunning an hour skips rows that already exist.
+          # -------------------------------------------------------------------
+          - name: miss_rates
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_query
+              body:
+                query: |
+                  FROM logs-*
+                  | WHERE @timestamp >= DATE_TRUNC(1 hour, NOW()) - 25 hours
+                      AND event.ingested >= DATE_TRUNC(1 hour, NOW()) - 1 hour
+                      AND event.ingested <  DATE_TRUNC(1 hour, NOW())
+                  | EVAL lag_s = DATE_DIFF("seconds", @timestamp, event.ingested)
+                  // Per-stream lag figures, computed once on raw events. Named so they don't collide
+                  // with fields in the lookup index, which would replace them in the join.
+                  | INLINE STATS stream_p50 = PERCENTILE(lag_s, 50),
+                                 stream_p95 = PERCENTILE(lag_s, 95),
+                                 stream_p99 = PERCENTILE(lag_s, 99),
+                                 stream_max = MAX(lag_s)
+                       BY data_stream.dataset, data_stream.namespace
+                  // Count events per stream and lag second, so rules join to counts, not raw events.
+                  // Lags over 2 hours are grouped by minute.
+                  | EVAL lag_s = CASE(lag_s > 7200, lag_s - lag_s % 60, lag_s)
+                  | STATS n = COUNT(*)
+                       BY data_stream.dataset, data_stream.namespace, lag_s,
+                          stream_p50, stream_p95, stream_p99, stream_max
+                  | LOOKUP JOIN rulescope-catalog-rule-streams ON data_stream.dataset, data_stream.namespace
+                  // Rules the profiler can estimate, from the catalog's facts.
+#% if global
+                  | WHERE rulescope.rule.id IS NOT NULL
+#% else
+                  | WHERE rulescope.space.id == ?space_id AND rulescope.rule.id IS NOT NULL
+#% end
+                      AND rulescope.rule.schedule_parsed
+                      AND rulescope.rule.timestamp_field == "@timestamp"
+                      AND rulescope.rule.type NOT IN ("machine_learning", "esql")
+                  | EVAL margin_s = rulescope.rule.lookback_s - rulescope.rule.interval_s
+                  | EVAL miss = CASE(lag_s <= margin_s, 0.0,
+                                     lag_s >= rulescope.rule.lookback_s, 1.0,
+                                     TO_DOUBLE(lag_s - margin_s) / rulescope.rule.interval_s)
+                  | STATS events = SUM(n),
+                          est_missed = SUM(n * miss),
+                          negative_lag_events = SUM(CASE(lag_s < -60, n, 0)),
+                          lag_p50_s = MAX(stream_p50),
+                          lag_p95_s = MAX(stream_p95),
+                          lag_p99_s = MAX(stream_p99),
+                          lag_max_s = MAX(stream_max)
+                       BY rulescope.space.id, rulescope.rule.id, rulescope.rule.name,
+                          rulescope.rule.interval_s, rulescope.rule.lookback_s,
+                          data_stream.dataset, data_stream.namespace
+                  | EVAL window_start = DATE_TRUNC(1 hour, NOW()) - 1 hour,
+                         miss_rate_pct = ROUND(est_missed / events * 100, 2),
+                         recommended_lookback_s = GREATEST(
+                           rulescope.rule.interval_s + 60,
+                           rulescope.rule.interval_s + TO_INTEGER(CEIL(lag_p99_s / 60.0)) * 60)
+                  | KEEP window_start, rulescope.space.id, rulescope.rule.id, rulescope.rule.name,
+                         rulescope.rule.interval_s, rulescope.rule.lookback_s,
+                         data_stream.dataset, data_stream.namespace,
+                         events, est_missed, miss_rate_pct,
+                         lag_p50_s, lag_p95_s, lag_p99_s, lag_max_s,
+                         negative_lag_events, recommended_lookback_s
+                  | SORT miss_rate_pct DESC
+                  | LIMIT 10000
+#% if space
+                params:
+                  - space_id: "{{ consts.space_id }}"
+#% end
+
+          - name: save_miss_rates
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_bulk
+              headers:
+                Content-Type: application/x-ndjson
+              body: |
+                {"delete":{"_index":"rulescope-lag-noop","_id":"noop"}}
+                {% for row in steps.miss_rates.output.values %}{"create":{"_index":"rulescope-lag-results","_id":"{{ row[0] }}:{{ row[2] }}:{{ row[6] }}-{{ row[7] }}"}}
+                {"@timestamp":{{ row[0] | json }},"rulescope":{"run":{"id":"{{ execution.id }}"},"scope":{{ consts.scope | json }},"window":{"start":{{ row[0] | json }}},"space":{"id":{{ row[1] | json }}},"rule":{"id":{{ row[2] | json }},"name":{{ row[3] | json }},"interval_s":{{ row[4] | json }},"lookback_s":{{ row[5] | json }}}},"data_stream":{"dataset":{{ row[6] | json }},"namespace":{{ row[7] | json }}},"events":{{ row[8] | json }},"est_missed":{{ row[9] | json }},"miss_rate_pct":{{ row[10] | json }},"lag_p50_s":{{ row[11] | json }},"lag_p95_s":{{ row[12] | json }},"lag_p99_s":{{ row[13] | json }},"lag_max_s":{{ row[14] | json }},"negative_lag_events":{{ row[15] | json }},"recommended_lookback_s":{{ row[16] | json }}}
+                {% endfor %}
+
+#% if space
+          # Shared stats: written by one copy only (consts.write_shared_stats).
+          - name: shared_stats
+            type: if
+            condition: "consts.write_shared_stats : true"
+            steps:
+#% end
+#% indent space 4
+          - name: stream_stats
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_query
+              body:
+                # Measured events use the ingest-time window. Unmeasured events (no
+                # event.ingested) can only be placed by @timestamp, so they use that.
+                query: |
+                  FROM logs-*
+                  | WHERE @timestamp >= DATE_TRUNC(1 hour, NOW()) - 25 hours
+                  | WHERE (event.ingested >= DATE_TRUNC(1 hour, NOW()) - 1 hour
+                           AND event.ingested < DATE_TRUNC(1 hour, NOW()))
+                       OR (event.ingested IS NULL
+                           AND @timestamp >= DATE_TRUNC(1 hour, NOW()) - 1 hour
+                           AND @timestamp < DATE_TRUNC(1 hour, NOW()))
+                  | EVAL lag_s = DATE_DIFF("seconds", @timestamp, event.ingested)
+                  | STATS events = COUNT(*),
+                          measured_events = COUNT(event.ingested),
+                          lag_p50_s = PERCENTILE(lag_s, 50),
+                          lag_p95_s = PERCENTILE(lag_s, 95),
+                          lag_p99_s = PERCENTILE(lag_s, 99),
+                          lag_max_s = MAX(lag_s),
+                          negative_lag_events = SUM(CASE(lag_s < -60, 1, 0))
+                       BY data_stream.dataset, data_stream.namespace
+                  | EVAL window_start = DATE_TRUNC(1 hour, NOW()) - 1 hour,
+                         unmeasured_events = events - measured_events
+                  | KEEP window_start, data_stream.dataset, data_stream.namespace,
+                         events, unmeasured_events,
+                         lag_p50_s, lag_p95_s, lag_p99_s, lag_max_s, negative_lag_events
+                  | LIMIT 10000
+
+          - name: save_stream_stats
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_bulk
+              headers:
+                Content-Type: application/x-ndjson
+              body: |
+                {"delete":{"_index":"rulescope-lag-noop","_id":"noop"}}
+                {% for row in steps.stream_stats.output.values %}{"create":{"_index":"rulescope-lag-stream-stats","_id":"{{ row[0] }}:{{ row[1] }}-{{ row[2] }}"}}
+                {"@timestamp":{{ row[0] | json }},"rulescope":{"run":{"id":"{{ execution.id }}"},"window":{"start":{{ row[0] | json }}}},"data_stream":{"dataset":{{ row[1] | json }},"namespace":{{ row[2] | json }}},"events":{{ row[3] | json }},"unmeasured_events":{{ row[4] | json }},"lag_p50_s":{{ row[5] | json }},"lag_p95_s":{{ row[6] | json }},"lag_p99_s":{{ row[7] | json }},"lag_max_s":{{ row[8] | json }},"negative_lag_events":{{ row[9] | json }}}
+                {% endfor %}
+
+          - name: host_lag
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_query
+              body:
+                query: |
+                  FROM logs-*
+                  | WHERE @timestamp >= DATE_TRUNC(1 hour, NOW()) - 25 hours
+                      AND event.ingested >= DATE_TRUNC(1 hour, NOW()) - 1 hour
+                      AND event.ingested <  DATE_TRUNC(1 hour, NOW())
+                  | EVAL lag_s = DATE_DIFF("seconds", @timestamp, event.ingested)
+                  | STATS events = COUNT(*),
+                          lag_p95_s = PERCENTILE(lag_s, 95),
+                          lag_max_s = MAX(lag_s),
+                          negative_lag_events = SUM(CASE(lag_s < -60, 1, 0))
+                       BY data_stream.dataset, data_stream.namespace, host.name
+                  | WHERE lag_p95_s > 60 OR negative_lag_events > 0
+                  | EVAL window_start = DATE_TRUNC(1 hour, NOW()) - 1 hour
+                  | KEEP window_start, data_stream.dataset, data_stream.namespace, host.name,
+                         events, lag_p95_s, lag_max_s, negative_lag_events
+                  | SORT lag_p95_s DESC
+                  | LIMIT 10000
+
+          - name: save_host_lag
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /_bulk
+              headers:
+                Content-Type: application/x-ndjson
+              body: |
+                {"delete":{"_index":"rulescope-lag-noop","_id":"noop"}}
+                {% for row in steps.host_lag.output.values %}{"create":{"_index":"rulescope-lag-host-lag","_id":"{{ row[0] }}:{{ row[1] }}-{{ row[2] }}:{{ row[3] }}"}}
+                {"@timestamp":{{ row[0] | json }},"rulescope":{"run":{"id":"{{ execution.id }}"},"window":{"start":{{ row[0] | json }}}},"data_stream":{"dataset":{{ row[1] | json }},"namespace":{{ row[2] | json }}},"host":{"name":{{ row[3] | json }}},"events":{{ row[4] | json }},"lag_p95_s":{{ row[5] | json }},"lag_max_s":{{ row[6] | json }},"negative_lag_events":{{ row[7] | json }}}
+                {% endfor %}
+#% end
+
+          - name: record_success
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /rulescope-lag-runs/_doc
+              body:
+                rulescope:
+                  run: { id: "{{ execution.id }}" }
+                  scope: "{{ consts.scope }}"
+#% if space
+                  space: { id: "{{ consts.space_id }}" }
+                wrote_shared_stats: "${{ consts.write_shared_stats }}"
+#% else
+                spaces_with_rules: "{{ steps.count_rules.output.values[0][2] }}"
+#% end
+                rules_seen: "{{ steps.count_rules.output.values[0][0] }}"
+                rules_supported: "{{ steps.count_rules.output.values[0][1] }}"
+                streams_matched: "${{ steps.count_pairs.output.count }}"
+                result_rows: "${{ steps.miss_rates.output.values | size }}"
+                status: success
+        else:
+          - name: record_no_data
+            type: elasticsearch.request
+            with:
+              method: POST
+              path: /rulescope-lag-runs/_doc
+              body:
+                rulescope:
+                  run: { id: "{{ execution.id }}" }
+                  scope: "{{ consts.scope }}"
+#% if space
+                  space: { id: "{{ consts.space_id }}" }
+                wrote_shared_stats: false
+#% else
+                spaces_with_rules: "{{ steps.count_rules.output.values[0][2] }}"
+#% end
+                rules_seen: "{{ steps.count_rules.output.values[0][0] }}"
+                rules_supported: "{{ steps.count_rules.output.values[0][1] }}"
+                streams_matched: "${{ steps.count_pairs.output.count }}"
+                result_rows: 0
+                status: no_data
+                reason: "{% if steps.check_logs.output.hits.total.value > 0 %}Logs found in logs-*, but none have event.ingested, so lag can't be measured. Set event.ingested at ingest (see the setup guide).{% else %}No data in logs-* yet. Results start in the first full hour after logs arrive.{% endif %}"
+    else:
+      - name: record_catalog_stale
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /rulescope-lag-runs/_doc
+          body:
+            rulescope:
+              run: { id: "{{ execution.id }}" }
+              scope: "{{ consts.scope }}"
+#% if space
+              space: { id: "{{ consts.space_id }}" }
+            wrote_shared_stats: false
+#% end
+            result_rows: 0
+            status: catalog_stale
+            reason: "{% if steps.catalog.output.aggregations.last_sync.value_as_string %}The Rule Catalog's last successful sync was at {{ steps.catalog.output.aggregations.last_sync.value_as_string }}, more than 2 hours ago, so no results were written. Check the Rule Catalog dashboard.{% else %}The Rule Catalog has no successful sync yet, so no results were written. Results start after its first sync.{% endif %}"

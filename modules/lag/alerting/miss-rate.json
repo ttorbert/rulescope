@@ -1,0 +1,33 @@
+{
+  "_rulescope_notes": [
+    "Created with POST /api/alerting/rule/rulescope-lag-miss-rate. Keys starting with _rulescope are removed before sending.",
+    "To change the threshold, edit the final WHERE (1.0 = 1%).",
+    "Confirmed on 9.5.6: Kibana accepts this .es-query ES|QL params shape (esqlQuery, timeField, timeWindowSize/Unit, threshold [0] with \">\")."
+  ],
+  "id": "rulescope-lag-miss-rate",
+  "name": "Ingest Lag Profiler: rule miss rate above 1%",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "schedule": {
+    "interval": "15m"
+  },
+  "tags": [
+    "rulescope",
+    "rulescope-lag"
+  ],
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM rulescope-lag-results\n| WHERE rulescope.window.start == DATE_TRUNC(1 hour, NOW()) - 1 hour\n| STATS events = SUM(events), est_missed = SUM(est_missed),\n        recommended_lookback_s = MAX(recommended_lookback_s)\n     BY rulescope.space.id, rulescope.rule.id, rulescope.rule.name, rulescope.rule.lookback_s\n| EVAL miss_rate_pct = ROUND(est_missed / events * 100, 2)\n| WHERE miss_rate_pct > 1.0\n| SORT miss_rate_pct DESC\n| LIMIT 100"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 3,
+    "timeWindowUnit": "h",
+    "threshold": [
+      0
+    ],
+    "thresholdComparator": ">",
+    "size": 100
+  },
+  "actions": []
+}

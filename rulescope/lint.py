@@ -5,12 +5,11 @@ from __future__ import annotations
 import re
 
 from . import resources
-from .core import FORBIDDEN_SETTING_KEYS, PACK_ROOT, VERSION, WORKFLOW_FILES, ConfigError
+from .core import FORBIDDEN_SETTING_KEYS, PACK_ROOT, VERSION, ConfigError
 from .report import Reporter
-from .render import MODE_SCOPES, generated_workflows, stale_workflows
-from .resources import LOOKUP_INDEX, load_json, pack_resources, render_module_workflow, render_workflow
+from .resources import LOOKUP_INDEX, load_json, pack_resources, render_module_workflow
 
-# A bulk body key can name a KEEP column by its last part (lagprof.rule.id -> "id"),
+# A bulk body key can name a KEEP column by its last part (rulescope.rule.id -> "id"),
 # or by the end of it ("start" for window_start). These columns may also fill
 # "@timestamp".
 TIMESTAMP_COLUMNS = {"window_start"}
@@ -114,9 +113,8 @@ def lint(rep: Reporter) -> int:
                 if any(key.endswith(f) or f"{f}." in key for f in FORBIDDEN_SETTING_KEYS) or "lifecycle.name" in key:
                     bad(r.kind, r.name, f"setting {key} is rejected on Serverless")
         is_lookup = (((body.get("template") or {}).get("settings") or {}).get("index") or {}).get("mode") == "lookup"
-        common = "lagprof-common" if r.module == "lag" else "rulescope-common"
-        if r.kind == "index_template" and not is_lookup and common not in body.get("composed_of", []):
-            bad(r.kind, r.name, f"does not use the {common} component template")
+        if r.kind == "index_template" and not is_lookup and "rulescope-common" not in body.get("composed_of", []):
+            bad(r.kind, r.name, "does not use the rulescope-common component template")
         if r.kind == "index_template" and is_lookup and body.get("composed_of"):
             bad(r.kind, r.name, "lookup index must have its own mapping: every mapped field enters the join")
         if r.kind == "index_template" and "data_stream" in body:
@@ -124,53 +122,41 @@ def lint(rep: Reporter) -> int:
                 bad(r.kind, r.name, "data stream has no lifecycle data_retention")
 
     # A lookup field replaces any query column of the same name in LOOKUP JOIN.
-    clash = prejoin_columns((PACK_ROOT / "esql" / "miss-rate.esql").read_text()) & resources.lookup_template_fields()
+    lag_esql = PACK_ROOT / "modules" / "lag" / "esql"
+    clash = prejoin_columns((lag_esql / "miss-rate.esql").read_text()) & resources.lookup_template_fields()
     if clash:
         bad("esql", "miss-rate.esql", f"columns created before the join are also mapped in {LOOKUP_INDEX} "
             f"and would be replaced: {', '.join(sorted(clash))}")
 
-    # The checked-in workflow files are rendered from the template.
-    for path in stale_workflows():
-        bad("workflow", path, "differs from the template; run python3 -m rulescope render")
-
-    rendered = {mode: text for mode, text in zip(WORKFLOW_FILES, generated_workflows().values())}
-    for mode, text in rendered.items():
-        for msg in bulk_row_problems(text):
-            bad("workflow", f"{MODE_SCOPES[mode]} scope", msg)
-
-    # The esql/ files are the readable copies of the queries inside the workflows.
-    workflows = {m: normalize_ws(t) for m, t in rendered.items()}
-    for qfile in sorted((PACK_ROOT / "esql").glob("*.esql")):
-        q = normalize_ws(qfile.read_text())
-        for mode, wf in workflows.items():
-            expected = q
-            if mode == "per-space" and qfile.stem == "miss-rate":
-                expected = q.replace("| WHERE lagprof.rule.id IS NOT NULL",
-                                     "| WHERE lagprof.space.id == ?space_id AND lagprof.rule.id IS NOT NULL")
-            if expected not in wf:
-                bad("esql", qfile.name, f"differs from the query in the {mode} workflow")
-
-    for mode in WORKFLOW_FILES:
-        try:
-            render_workflow(mode, "lint-check", True)
-        except ConfigError as err:
-            bad("workflow", mode, str(err))
-
     # Module workflows rendered from templates, in both scopes.
+    rendered: dict[tuple[str, str], str] = {}
     for r in pack_resources():
-        if r.kind != "workflow" or r.module == "lag":
+        if r.kind != "workflow":
             continue
         for space in (None, "lint-check"):
             scope = f"space {space}" if space else "global"
             try:
-                _, text = render_module_workflow(r, space)
+                _, text = render_module_workflow(r, space, shared_stats=True)
             except ConfigError as err:
                 bad("workflow", f"{r.name} ({scope})", str(err))
                 continue
+            rendered[(r.name, "space" if space else "global")] = text
             for msg in bulk_row_problems(text):
                 bad("workflow", f"{r.name} ({scope})", msg)
             if "[[" in text or "#%" in text:
                 bad("workflow", f"{r.name} ({scope})", "unrendered template markup left in the output")
+
+    # The lag module's esql/ files are the readable copies of the queries in its workflow.
+    for qfile in sorted(lag_esql.glob("*.esql")):
+        q = normalize_ws(qfile.read_text())
+        for scope in ("global", "space"):
+            wf = normalize_ws(rendered.get(("rulescope-lag-hourly", scope), ""))
+            expected = q
+            if scope == "space" and qfile.stem == "miss-rate":
+                expected = q.replace("| WHERE rulescope.rule.id IS NOT NULL",
+                                     "| WHERE rulescope.space.id == ?space_id AND rulescope.rule.id IS NOT NULL")
+            if expected not in wf:
+                bad("esql", qfile.name, f"differs from the query in the lag workflow ({scope} scope)")
 
     if not problems:
         rep.line("ok", "lint", "pack", f"v{VERSION}")

@@ -11,9 +11,10 @@ from .client import Client, HttpError
 from .core import PACK_ROOT, VERSION, WORKFLOWS_API, ConfigError, space_prefix
 from .modules import DEFAULT_MODULES, MODULES, resolve
 from .report import Reporter
-from .resources import (ES_PATHS, LOOKUP_INDEX, LOOKUP_INDICES, Resource, installed_version, load_json,
-                        mapped_fields, marker_extra, marker_version, pack_resources, render_alert_rule,
-                        render_dashboard, render_module_workflow, render_role, render_workflow, role_spaces,
+from .resources import (ES_PATHS, LOOKUP_INDICES, VERSION_TAG, VERSION_TAG_PREFIXES, Resource,
+                        installed_version, load_json, mapped_fields, marker_extra, marker_version, module_resources,
+                        pack_resources,
+                        render_alert_rule, render_dashboard, render_module_workflow, render_role, role_spaces,
                         with_meta, workflow_name)
 
 
@@ -62,58 +63,47 @@ def installed_workflows(client: Client) -> list[dict] | None:
 
 
 def mode_conflict(installed: list[dict], opts: "InstallOptions") -> str | None:
-    """The two workflow versions are alternatives; running both profiles every space twice.
+    """One scope per module per cluster: a global copy, or per-space copies, not both.
 
-    The same goes for each module: one scope per module per cluster."""
-    wanted = {m.name for m in resolve(opts.modules)}
-    if "catalog" in wanted:
-        cat = [w for w in installed if w.get("module") == "catalog"]
+    Running both would sync or profile every space twice."""
+    for m in resolve(opts.modules):
+        mine = [w for w in installed if w.get("module") == m.name]
         if opts.workflow == "per-space":
-            other = [w for w in cat if "-space-" not in w["name"]]
+            other = [w for w in mine if "-space-" not in w["name"]]
             if other:
-                return ("the global catalog is installed; a module has one scope per cluster. "
-                        "Run uninstall --modules catalog first (history is kept), or use --force")
+                return (f"the global {m.title} is installed ({other[0]['name']}); a module has one scope per "
+                        f"cluster. Run uninstall --modules {m.name} first (history is kept), or use --force")
         else:
-            other = [w for w in cat if "-space-" in w["name"]]
+            other = [w for w in mine if "-space-" in w["name"]]
             if other:
                 spaces = ", ".join(sorted({w["space"] for w in other}))
-                return (f"per-space catalog copies are installed (spaces: {spaces}); a module has one scope "
-                        "per cluster. Run uninstall --modules catalog --space <id> for each first, or use --force")
-    if "lag" not in wanted:
-        return None
-    installed = [w for w in installed if w.get("module", "lag") == "lag"]
-    if opts.workflow == "per-space":
-        other = [w for w in installed if w["name"] == "lagprof-hourly-all-spaces"]
-        if other:
-            return ("the all-spaces workflow is installed; install one version, not both. "
-                    "Run uninstall first (history is kept), or use --force")
-    else:
-        other = [w for w in installed if w["name"].startswith("lagprof-hourly-space-")]
-        if other:
-            spaces = ", ".join(sorted({w["space"] for w in other}))
-            return (f"per-space workflows are installed (spaces: {spaces}); install one version, not both. "
-                    "Run uninstall --space <id> for each first (history is kept), or use --force")
+                return (f"per-space {m.title} copies are installed (spaces: {spaces}); a module has one scope "
+                        f"per cluster. Run uninstall --modules {m.name} --space <id> for each first "
+                        "(history is kept), or use --force")
     return None
 
 
+LAG_SPACE_WORKFLOW = "rulescope-lag-hourly-space-"
+
+
 def shared_stats_conflict(client: Client, space: str, installed: list[dict] | None = None) -> str | None:
-    """Return another space whose installed copy already writes shared stats, if any.
+    """Return another space whose installed lag copy already writes shared stats, if any.
 
     Uses the installed workflows when they can be listed, so a removed copy doesn't
     block. Otherwise falls back to the last 7 days of run history."""
     if installed is not None:
         others = [w["space"] for w in installed
-                  if w["shared_stats"] and w["name"].startswith("lagprof-hourly-space-") and w["space"] != space]
+                  if w["shared_stats"] and w["name"].startswith(LAG_SPACE_WORKFLOW) and w["space"] != space]
         return others[0] if others else None
-    body = {"size": 1, "_source": ["lagprof.space.id"],
-            "query": {"bool": {"filter": [{"term": {"lagprof.wrote_shared_stats": True}},
+    body = {"size": 1, "_source": ["rulescope.space.id"],
+            "query": {"bool": {"filter": [{"term": {"wrote_shared_stats": True}},
                                           {"range": {"@timestamp": {"gte": "now-7d"}}}],
-                               "must_not": [{"term": {"lagprof.space.id": space}}]}}}
-    code, out = client.es("POST", "/lagprof-runs/_search", body, allow=(404,))
+                               "must_not": [{"term": {"rulescope.space.id": space}}]}}}
+    code, out = client.es("POST", "/rulescope-lag-runs/_search", body, allow=(404,))
     if code == 404:
         return None
     hits = out.get("hits", {}).get("hits", [])
-    return hits[0]["_source"]["lagprof"]["space"]["id"] if hits else None
+    return hits[0]["_source"]["rulescope"]["space"]["id"] if hits else None
 
 
 def install(client: Client, rep: Reporter, opts: InstallOptions) -> int:
@@ -153,8 +143,7 @@ def install_one(client: Client, rep: Reporter, r: Resource, opts: InstallOptions
         if r.name in LOOKUP_INDICES:
             _, m = client.es("GET", f"/{r.name}/_mapping")
             installed = mapped_fields(next(iter(m.values()))["mappings"])
-            wanted = (resources.lookup_template_fields() if r.name == LOOKUP_INDEX
-                      else resources.lookup_template_fields(r.name))
+            wanted = resources.lookup_template_fields(r.name)
             extra, missing = installed - wanted, wanted - installed
             if extra or missing:
                 # Extra fields would enter the join. Missing ones (such as @timestamp, which
@@ -201,8 +190,8 @@ def install_one(client: Client, rep: Reporter, r: Resource, opts: InstallOptions
         client.kb("PUT", f"/api/security/role/{r.name}", render_role(spaces, marker, r.path))
     elif r.kind == "alert_rule":
         body = render_alert_rule(r.path, space)
-        body["tags"] = [t for t in body.get("tags", []) if not t.startswith("lagprof-version:")]
-        body["tags"].append(f"lagprof-version:{marker}")
+        body["tags"] = [t for t in body.get("tags", []) if not t.startswith(VERSION_TAG_PREFIXES)]
+        body["tags"].append(f"{VERSION_TAG}{marker}")
         body.pop("id")
         rule_id = r.name
         base = f"{space_prefix(space)}/api/alerting/rule/{rule_id}"
@@ -230,8 +219,8 @@ def sync_existing_mappings(client: Client, rep: Reporter, r: Resource) -> None:
     if not props:
         return
     pattern = MODULES[r.module].indices
-    lookups = ",".join(f"-{i}" for i in LOOKUP_INDICES if i.startswith(pattern.rstrip("*")))
-    path = f"/{pattern},{lookups}/_mapping?allow_no_indices=true&expand_wildcards=open,hidden"
+    targets = ",".join([pattern] + [f"-{i}" for i in LOOKUP_INDICES if i.startswith(pattern.rstrip("*"))])
+    path = f"/{targets}/_mapping?allow_no_indices=true&expand_wildcards=open,hidden"
     code, out = client.es("PUT", path, {"properties": props}, allow=(400,))
     if code == 400:
         rep.line("WARN", "mapping", pattern, f"could not add new fields to existing indices: {out}")
@@ -244,12 +233,9 @@ def workflow_id(text: str) -> str:
     return m.group(1)
 
 
-def install_workflow(client: Client, rep: Reporter, opts: InstallOptions, r: Resource | None = None) -> int:
-    if r is None or r.module == "lag":
-        fname, text = render_workflow(opts.workflow, opts.space, opts.shared_stats)
-    else:
-        fname, text = render_module_workflow(r, opts.kibana_space)
-    module = r.module if r else "lag"
+def install_workflow(client: Client, rep: Reporter, opts: InstallOptions, r: Resource) -> int:
+    fname, text = render_module_workflow(r, opts.kibana_space, opts.shared_stats)
+    module = r.module
     out_dir = PACK_ROOT / "build"
     out_dir.mkdir(exist_ok=True)
     (out_dir / fname).write_text(text)
@@ -262,7 +248,7 @@ def install_workflow(client: Client, rep: Reporter, opts: InstallOptions, r: Res
     name = workflow_id(text)
     owner = client.as_workflow_owner(module)
     if owner is client:
-        key = "LAGPROF_WORKFLOW_API_KEY" if module == "lag" else f"RULESCOPE_{module.upper()}_WORKFLOW_API_KEY"
+        key = f"RULESCOPE_{module.upper()}_WORKFLOW_API_KEY"
         rep.line("WARN", "workflow", name, f"{key} not set: scheduled runs will use "
                  "the installer's privileges. See README, 'Workflow identity'.")
     # Match by name: Kibana doesn't reuse a deleted workflow's ID, so a re-created
@@ -310,7 +296,7 @@ def status(client: Client, rep: Reporter, space: str | None = None,
         if r.kind == "workflow":
             # Per-space copies live in their own space.
             code, out = client.kb("GET", f"{space_prefix(space)}{WORKFLOWS_API}?size=1000", allow=(400, 404))
-            prefix = "lagprof-" if r.module == "lag" else workflow_name(r, space)
+            prefix = workflow_name(r, space)
             names = [f"{w['name']} (id {w['id']})" for w in (out or {}).get("results", [])
                      if str(w.get("name", "")).startswith(prefix)] if code == 200 else []
             rep.line("present" if names else "missing", r.kind, ", ".join(names) or r.name,
@@ -346,7 +332,7 @@ SHARED_KINDS = ("component_template", "index_template", "pipeline", "index", "da
 
 def removed_workflow_names(module: str, space: str | None) -> set[str]:
     """Names of the module's workflows this uninstall removes."""
-    return {workflow_name(r, space) for r in pack_resources(space, [module]) if r.kind == "workflow"}
+    return {workflow_name(r, space) for r in module_resources(module, space) if r.kind == "workflow"}
 
 
 def other_copies(installed: list[dict], module: str, space: str | None) -> list[dict]:
@@ -355,16 +341,34 @@ def other_copies(installed: list[dict], module: str, space: str | None) -> list[
     return [w for w in installed if w.get("module") == module and w["name"] not in gone]
 
 
+def dependents_left(installed: list[dict], modules: tuple[str, ...] | list[str]) -> list[str]:
+    """Installed modules that need a module being removed and aren't removed with it."""
+    removing = set(modules)
+    left = []
+    for m in MODULES.values():
+        if m.name in removing or not set(m.requires) & removing:
+            continue
+        names = sorted(f"{w['name']} ({w['space']})" for w in installed if w.get("module") == m.name)
+        if names:
+            left.append(f"{m.title}: {', '.join(names)}")
+    return left
+
+
 def uninstall(client: Client, rep: Reporter, delete_data: bool, space: str | None = None,
-              modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
+              modules: tuple[str, ...] = DEFAULT_MODULES, force: bool = False) -> int:
     installed = installed_workflows(client)
     if installed is None:
         rep.line("WARN", "workflow", "*", "couldn't list workflows to check for other copies; "
                  "removing shared resources too")
         installed = []
+    left = dependents_left(installed, modules)
+    if left and not force:
+        rep.line("BLOCKED", "module", ",".join(modules),
+                 f"still needed by {'; '.join(left)}. Uninstall those modules too, or use --force")
+        return 1
     failures = 0
-    # Report modules first, the catalog last.
-    for module in reversed(resolve(modules)):
+    # Only the modules named, not their requirements: report modules first, the catalog last.
+    for module in reversed([m for m in resolve(modules) if m.name in modules]):
         failures += uninstall_module(client, rep, module.name, delete_data, space,
                                      other_copies(installed, module.name, space))
     return 1 if failures else 0
@@ -375,21 +379,16 @@ def delete_module_data(client: Client, rep: Reporter, module: str, space: str | 
     pattern = MODULES[module].indices
     if not others:
         client.es("DELETE", f"/_data_stream/{pattern}", allow=(404,))
-        indices = [r.name for r in pack_resources(space, [module]) if r.kind == "index"]
-        client.es("DELETE", f"/{','.join(indices)}?ignore_unavailable=true", allow=(404,))
-        rep.line("deleted", "data", pattern, "data streams and indices")
-    elif space and module == "lag":
-        # Only this space's documents. Stream stats and host lag have no space and
-        # are shared, so they stay.
-        client.es("POST", "/lagprof-*/_delete_by_query?conflicts=proceed&refresh=true"
-                  "&allow_no_indices=true&ignore_unavailable=true",
-                  {"query": {"term": {"lagprof.space.id": space}}})
-        rep.line("deleted", "data", "lagprof-*", f"documents for space {space!r}; "
-                 f"shared stream and host stats kept for {shared_with}")
+        indices = [r.name for r in module_resources(module, space) if r.kind == "index"]
+        if indices:  # never an empty path: DELETE / would name no index at all
+            client.es("DELETE", f"/{','.join(indices)}?ignore_unavailable=true", allow=(404,))
+        rep.line("deleted", "data", pattern, "data streams and indices" if indices else "data streams")
     elif space:
         client.es("POST", f"/{pattern}/_delete_by_query?conflicts=proceed&refresh=true"
                   "&allow_no_indices=true&ignore_unavailable=true",
                   {"query": {"term": {"rulescope.scope": f"space:{space}"}}})
+        # Documents carry the scope that wrote them. The lag module's stream stats and
+        # host lag have no scope: they're shared by every copy, so they stay.
         rep.line("deleted", "data", pattern, f"documents for space {space!r}; other copies kept: {shared_with}")
     else:
         rep.line("kept", "data", pattern, f"other workflows are installed: {shared_with}")
@@ -402,7 +401,7 @@ def uninstall_module(client: Client, rep: Reporter, module: str, delete_data: bo
     if delete_data:
         delete_module_data(client, rep, module, space, others, shared_with)
     failures = 0
-    for r in reversed(pack_resources(space, [module])):
+    for r in reversed(module_resources(module, space)):
         if others and r.kind in SHARED_KINDS:
             rep.line("kept", r.kind, r.name, f"shared with {shared_with}")
             continue

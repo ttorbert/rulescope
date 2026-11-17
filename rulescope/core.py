@@ -11,7 +11,6 @@ VERSION = (PACK_ROOT / "VERSION").read_text().strip()
 TARGETS = ("docker", "self-managed", "cloud", "serverless")
 MIN_VERSION = (9, 5, 6)
 TESTED_VERSION = "9.5.6"
-ROLE_NAME = "lagprof-workflow"
 
 # Workflows management API (confirmed on 9.5.6):
 #   GET  /api/workflows                       list
@@ -28,13 +27,9 @@ SERVERLESS_API_VERSION = "2023-10-31"
 FORBIDDEN_SETTING_KEYS = ("number_of_shards", "number_of_replicas", "lifecycle.name",
                           "lifecycle.rollover_alias", "routing.allocation")
 
-# The lag workflow is written once as a template (see render.py). WORKFLOW_FILES are
-# its rendered copies, kept in the repo for manual imports; lint checks they match.
-WORKFLOW_TEMPLATE = "kibana/workflows/lagprof-hourly.yaml.tmpl"
-WORKFLOW_FILES = {
-    "all-spaces": "kibana/workflows/lagprof-hourly-all-spaces.yaml",
-    "per-space": "kibana/workflows/lagprof-hourly-per-space.yaml",
-}
+# Installer workflow modes (the --workflow option): one global copy of each module,
+# or one copy per space.
+WORKFLOW_MODES = ("all-spaces", "per-space")
 SPACE_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
 

@@ -1,8 +1,8 @@
-# Ingest Lag Profiler
+# rulescope: Rule Catalog and Ingest Lag Profiler
 #
 #   make test                       offline checks: lint, unit tests, quick formula simulation
 #   make lab-up                     start the Rancher Desktop lab and install the pack into it
-#   make lab-owner                  save the workflow as a low-privilege lab user
+#   make lab-owner                  save each module's workflows as a low-privilege lab user
 #   make lab-down | lab-reset       stop the lab (reset also deletes its data)
 #   make lab-traffic                send lab events (Ctrl-C to stop)
 #   make check|install|status|uninstall TARGET=targets/prod.env
@@ -10,7 +10,6 @@
 #   make validate [RUN=name]        lab validation against real rule alerts (~105 min)
 #   make dashboard                  check the dashboard queries and rebuild their JSON
 #   make simulate                   full formula simulation (100k trials per point)
-#   make render                     regenerate kibana/workflows/*.yaml from the workflow template
 
 SHELL      := /bin/bash
 PYTHON     ?= python3
@@ -28,11 +27,11 @@ RUN        ?= $(shell date +%Y%m%d-%H%M)
 # Load lab passwords so targets/docker.env can use ${ELASTIC_PASSWORD}.
 WITH_LAB_ENV := set -a; [ -f $(LAB_DIR)/.env ] && . $(LAB_DIR)/.env; set +a;
 
-.PHONY: help test lint unit simulate render lab-prep lab-up lab-owner lab-down lab-reset lab-logs lab-traffic \
+.PHONY: help test lint unit simulate lab-prep lab-up lab-owner lab-down lab-reset lab-logs lab-traffic \
         check install status uninstall test-pipelines validate dashboard package
 
 help:
-	@sed -n '2,13p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
 
 # ---- offline -------------------------------------------------------------------------
 
@@ -44,9 +43,6 @@ lint:
 
 unit:
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -t .
-
-render:
-	$(PYTHON) -m rulescope render
 
 simulate:
 	$(PYTHON) tests/model/simulate_rule_schedule.py --markdown
@@ -64,8 +60,11 @@ lab-up: lab-prep
 	@echo "Kibana: http://localhost:5601  (user elastic, password in $(LAB_DIR)/.env)"
 
 lab-owner:
-	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/lab-owner.py
-	$(WITH_LAB_ENV) LAGPROF_WORKFLOW_API_KEY=$$(cat build/lab-owner-key) $(PYTHON) -m rulescope install --target-file targets/docker.env $(INSTALL_ARGS)
+	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/lab-owner.py --module catalog
+	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/lab-owner.py --module lag
+	$(WITH_LAB_ENV) RULESCOPE_CATALOG_WORKFLOW_API_KEY=$$(cat build/lab-owner-key-catalog) \
+	    RULESCOPE_LAG_WORKFLOW_API_KEY=$$(cat build/lab-owner-key-lag) \
+	    $(PYTHON) -m rulescope install --target-file targets/docker.env $(INSTALL_ARGS)
 
 lab-down:
 	$(COMPOSE) down
@@ -92,7 +91,7 @@ validate:
 	$(WITH_LAB_ENV) $(PYTHON) $(LAB_DIR)/validate.py score --run $(RUN)
 
 dashboard:
-	$(WITH_LAB_ENV) $(PYTHON) kibana/dashboards/build.py --check --target-file $(TARGET)
+	$(WITH_LAB_ENV) $(PYTHON) modules/lag/dashboards/build.py --check --target-file $(TARGET)
 	$(WITH_LAB_ENV) $(PYTHON) modules/catalog/dashboards/build.py --check --target-file $(TARGET)
 
 test-pipelines:
@@ -102,6 +101,6 @@ test-pipelines:
 
 package:
 	@mkdir -p dist
-	zip -qr dist/ingest-lag-profiler-$$(cat VERSION).zip VERSION README.md elasticsearch esql kibana modules \
-	    rulescope scripts/lagprof.py targets/*.example docs
-	@echo "dist/ingest-lag-profiler-$$(cat VERSION).zip"
+	zip -qr dist/rulescope-$$(cat VERSION).zip VERSION README.md modules rulescope scripts/lagprof.py \
+	    targets/*.example docs
+	@echo "dist/rulescope-$$(cat VERSION).zip"
